@@ -1,0 +1,29 @@
+# Entornos y secretos
+.env
+.env.*
+!.env.example
+*.p12
+*.jks
+*.pem
+*.key
+
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+out/
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.log
