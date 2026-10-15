@@ -12,5 +12,12 @@ actaflow:
     native-port: 0
   bff:
     hmac-secret: secreto-de-prueba-publico-solo-para-tests-0123456789
+  seguridad:
+    pepper: pepper-de-prueba-publico-solo-para-tests-0123456789
+    token-secret: token-secret-de-prueba-publico-solo-para-tests-01
+  arranque:
+    organization-name: Centro de Conciliacion de Prueba
+    admin-email: admin@prueba.test
+    invitation-token: invitacion-de-arranque-publica-solo-para-tests-0001
   estado:
     timeout-base-datos: 5s
