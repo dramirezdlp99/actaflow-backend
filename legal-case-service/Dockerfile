@@ -11,9 +11,9 @@ COPY rpc-contracts/pom.xml rpc-contracts/pom.xml
 COPY platform/pom.xml platform/pom.xml
 COPY identity-service/pom.xml identity-service/pom.xml
 COPY legal-case-service/pom.xml legal-case-service/pom.xml
-# Contratos fijados (fuente unica de verdad) y solo el codigo que necesita este servicio.
+# Contratos fijados (fuente unica de verdad): rpc-contracts genera el codigo desde aqui en el build.
+# Despues, solo el codigo que necesita este servicio.
 COPY contracts ./contracts
-COPY rpc-contracts/src rpc-contracts/src
 COPY platform/src platform/src
 COPY legal-case-service/src legal-case-service/src
 RUN mvn -B -q -pl legal-case-service -am -DskipTests -Dcheckstyle.skip=true package
