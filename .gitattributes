@@ -5,3 +5,9 @@ mvnw text eol=lf
 *.java text eol=lf
 *.sql text eol=lf
 *.yaml text eol=lf
+*.xml text eol=lf
+*.mjs text eol=lf
+Dockerfile text eol=lf
+# Contratos fijados: su sha256 en contracts.lock.json se calcula con LF.
+contracts/** text eol=lf
+contracts.lock.json text eol=lf
