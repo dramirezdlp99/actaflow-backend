@@ -96,6 +96,10 @@ message InviteMemberResponse {
   string invitation_id = 1;
   // When it expires.
   google.protobuf.Timestamp expires_at = 2;
+  // Single-use secret the invitee needs to register. Returned only once, to the admin who
+  // invites: the server stores just its hash. There is no email service, so the admin shares
+  // the registration link through a channel they trust.
+  string invitation_token = 3;
 }
 
 // Request for ChangeMemberRole.
