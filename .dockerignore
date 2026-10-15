@@ -3,6 +3,7 @@
 .idea
 .vscode
 target
+**/target
 *.iml
 .env
 .env.*
@@ -10,4 +11,6 @@ target
 mvnw
 mvnw.cmd
 .mvn
+scripts
 README.md
+**/*.md
