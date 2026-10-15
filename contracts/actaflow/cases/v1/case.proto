@@ -1,0 +1,284 @@
+syntax = "proto3";
+
+package actaflow.cases.v1;
+
+import "actaflow/common/v1/pagination.proto";
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "CaseProto";
+option java_package = "com.actaflow.contracts.cases.v1";
+
+// Case files (expedientes). Implemented by legal-case-service.
+//
+// Access rule for every RPC: the caller must be a participant of the case. Otherwise the
+// answer is NOT_FOUND, never PERMISSION_DENIED, so the existence of a case is not revealed.
+// Organization admins have no special access to case content.
+//
+// Metadata (number, kind, status, dates, participants) is plaintext so lists can be
+// rendered on the server. Everything descriptive (title, summary) is encrypted with the
+// case key in the browser.
+service CaseService {
+  // Creates a case. The creator becomes its first conciliator and sends the case key
+  // already wrapped for their own public key.
+  // Errors: ALREADY_EXISTS (case number taken in the organization).
+  rpc CreateCase(CreateCaseRequest) returns (CreateCaseResponse);
+  // Returns one case with the caller's role and wrapped case key.
+  rpc GetCase(GetCaseRequest) returns (GetCaseResponse);
+  // Lists the cases the caller participates in, newest activity first.
+  rpc ListCases(ListCasesRequest) returns (ListCasesResponse);
+  // Updates the encrypted descriptive fields or the schedule.
+  // Errors: ABORTED when `expected_revision` is stale.
+  rpc UpdateCase(UpdateCaseRequest) returns (UpdateCaseResponse);
+  // Changes the procedural status (open, in hearing, agreement, no agreement, archived).
+  rpc ChangeCaseStatus(ChangeCaseStatusRequest) returns (ChangeCaseStatusResponse);
+  // Returns the case activity timeline (metadata only, no content).
+  rpc ListCaseEvents(ListCaseEventsRequest) returns (ListCaseEventsResponse);
+}
+
+// Kind of procedure.
+enum CaseKind {
+  // Never valid.
+  CASE_KIND_UNSPECIFIED = 0;
+  // Extrajudicial conciliation hearing (Ley 2220 de 2022).
+  CASE_KIND_CONCILIATION = 1;
+  // Mediation session.
+  CASE_KIND_MEDIATION = 2;
+  // Drafting and signing of a contract.
+  CASE_KIND_CONTRACT = 3;
+}
+
+// Procedural status of a case.
+enum CaseStatus {
+  // Never valid.
+  CASE_STATUS_UNSPECIFIED = 0;
+  // Created; preparing the hearing.
+  CASE_STATUS_OPEN = 1;
+  // A hearing is in progress right now.
+  CASE_STATUS_IN_HEARING = 2;
+  // The parties reached an agreement; the minute is being closed or is sealed.
+  CASE_STATUS_AGREEMENT = 3;
+  // The hearing ended without agreement (constancia de no acuerdo).
+  CASE_STATUS_NO_AGREEMENT = 4;
+  // Closed and read-only.
+  CASE_STATUS_ARCHIVED = 5;
+}
+
+// Role of a person inside one case.
+enum CaseRole {
+  // Never valid.
+  CASE_ROLE_UNSPECIFIED = 0;
+  // Leads the hearing and edits the minute (conciliador).
+  CASE_ROLE_CONCILIATOR = 1;
+  // Edits and reviews the minute (asistente legal).
+  CASE_ROLE_ASSISTANT = 2;
+  // A party or its attorney: reads, comments and accepts the final minute.
+  CASE_ROLE_PARTY = 3;
+}
+
+// A case file.
+message LegalCase {
+  // Case identifier (UUID).
+  string id = 1;
+  // Organization that owns the case.
+  string organization_id = 2;
+  // Filing number (radicado), unique per organization, for example "CC-2026-0142".
+  string case_number = 3;
+  // Kind of procedure.
+  CaseKind kind = 4;
+  // Current status.
+  CaseStatus status = 5;
+  // Title and summary, encrypted with the case key (plaintext type actaflow.cases.v1.CaseDetails).
+  actaflow.crypto.v1.EncryptedBlob details = 6;
+  // Scheduled date and time of the next hearing, if any.
+  google.protobuf.Timestamp scheduled_hearing_at = 7;
+  // Number of participants.
+  int32 participant_count = 8;
+  // Creation time.
+  google.protobuf.Timestamp created_at = 9;
+  // Last activity (any change, hearing or minute update).
+  google.protobuf.Timestamp last_activity_at = 10;
+  // Optimistic concurrency revision, incremented on every change.
+  int64 revision = 11;
+}
+
+// Plaintext of LegalCase.details, only ever visible inside the browser.
+message CaseDetails {
+  // Short title, for example "Arrendamiento local comercial calle 18".
+  string title = 1 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 160
+  }];
+  // Free-text summary of the dispute.
+  string summary = 2 [(buf.validate.field).string.max_len = 4000];
+}
+
+// What the caller can do in a case.
+message CaseMembership {
+  // Participant identifier of the caller in this case.
+  string participant_id = 1;
+  // The caller's role in this case.
+  CaseRole role = 2;
+  // The case key wrapped for the caller's public key. Empty while it has not been granted.
+  actaflow.crypto.v1.WrappedKey wrapped_case_key = 3;
+}
+
+// Request for CreateCase.
+message CreateCaseRequest {
+  // Filing number.
+  string case_number = 1 [(buf.validate.field).string.pattern = "^[A-Z0-9][A-Z0-9-]{2,39}$"];
+  // Kind of procedure.
+  CaseKind kind = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Encrypted CaseDetails.
+  actaflow.crypto.v1.EncryptedBlob details = 3 [(buf.validate.field).required = true];
+  // Case key wrapped for the creator.
+  actaflow.crypto.v1.WrappedKey wrapped_case_key = 4 [(buf.validate.field).required = true];
+  // Optional first hearing date.
+  google.protobuf.Timestamp scheduled_hearing_at = 5;
+  // Client-generated UUID for idempotency (offline outbox replays are safe).
+  string idempotency_key = 6 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of CreateCase.
+message CreateCaseResponse {
+  // The new case.
+  LegalCase legal_case = 1;
+  // The creator's membership.
+  CaseMembership membership = 2;
+}
+
+// Request for GetCase.
+message GetCaseRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of GetCase.
+message GetCaseResponse {
+  // The case.
+  LegalCase legal_case = 1;
+  // The caller's membership.
+  CaseMembership membership = 2;
+}
+
+// Request for ListCases.
+message ListCasesRequest {
+  // Paging.
+  actaflow.common.v1.PageRequest page = 1 [(buf.validate.field).required = true];
+  // Optional filter by status.
+  CaseStatus status = 2 [(buf.validate.field).enum.defined_only = true];
+}
+
+// One row of ListCases.
+message CaseSummary {
+  // The case.
+  LegalCase legal_case = 1;
+  // The caller's role in it.
+  CaseRole role = 2;
+}
+
+// Response of ListCases.
+message ListCasesResponse {
+  // Cases of this page.
+  repeated CaseSummary cases = 1;
+  // Paging.
+  actaflow.common.v1.PageInfo page_info = 2;
+}
+
+// Request for UpdateCase.
+message UpdateCaseRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Revision the client edited; the update fails with ABORTED if it changed meanwhile.
+  int64 expected_revision = 2 [(buf.validate.field).int64.gte = 1];
+  // New encrypted CaseDetails, if they changed.
+  actaflow.crypto.v1.EncryptedBlob details = 3;
+  // New hearing date, if it changed.
+  google.protobuf.Timestamp scheduled_hearing_at = 4;
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 5 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of UpdateCase.
+message UpdateCaseResponse {
+  // The updated case.
+  LegalCase legal_case = 1;
+}
+
+// Request for ChangeCaseStatus. Only conciliators.
+message ChangeCaseStatusRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Target status. Invalid transitions fail with FAILED_PRECONDITION.
+  CaseStatus status = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 3 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of ChangeCaseStatus.
+message ChangeCaseStatusResponse {
+  // The updated case.
+  LegalCase legal_case = 1;
+}
+
+// Kinds of timeline events.
+enum CaseEventKind {
+  // Never valid.
+  CASE_EVENT_KIND_UNSPECIFIED = 0;
+  // The case was created.
+  CASE_EVENT_KIND_CREATED = 1;
+  // A participant was invited or joined.
+  CASE_EVENT_KIND_PARTICIPANT_ADDED = 2;
+  // A hearing started.
+  CASE_EVENT_KIND_HEARING_STARTED = 3;
+  // A hearing ended.
+  CASE_EVENT_KIND_HEARING_ENDED = 4;
+  // A minute was created from a template.
+  CASE_EVENT_KIND_MINUTE_CREATED = 5;
+  // The final document was sealed.
+  CASE_EVENT_KIND_DOCUMENT_SEALED = 6;
+  // A party accepted the final document.
+  CASE_EVENT_KIND_DOCUMENT_ACCEPTED = 7;
+  // The status changed.
+  CASE_EVENT_KIND_STATUS_CHANGED = 8;
+  // An attachment was added.
+  CASE_EVENT_KIND_ATTACHMENT_ADDED = 9;
+}
+
+// One timeline event (metadata only).
+message CaseEvent {
+  // Event identifier.
+  string id = 1;
+  // What happened.
+  CaseEventKind kind = 2;
+  // When it happened.
+  google.protobuf.Timestamp occurred_at = 3;
+  // Participant who caused it, if any.
+  string actor_participant_id = 4;
+  // Display name of that participant at the time.
+  string actor_display_name = 5;
+}
+
+// Request for ListCaseEvents.
+message ListCaseEventsRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Paging.
+  actaflow.common.v1.PageRequest page = 2 [(buf.validate.field).required = true];
+}
+
+// Response of ListCaseEvents.
+message ListCaseEventsResponse {
+  // Events, newest first.
+  repeated CaseEvent events = 1;
+  // Paging.
+  actaflow.common.v1.PageInfo page_info = 2;
+}
