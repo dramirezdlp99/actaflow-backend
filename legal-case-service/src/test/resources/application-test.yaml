@@ -1,0 +1,26 @@
+# Perfil de pruebas. Todos los valores son FALSOS y PUBLICOS: solo sirven en local y en CI.
+# Base de datos de pruebas: crea una vez el usuario y la base actaflow_test (ver README).
+spring:
+  datasource:
+    url: ${ACTAFLOW_TEST_DB_URL:jdbc:postgresql://localhost:5432/actaflow_test}
+    username: ${ACTAFLOW_TEST_DB_USERNAME:actaflow_test}
+    password: ${ACTAFLOW_TEST_DB_PASSWORD:actaflow_test}
+
+actaflow:
+  grpc:
+    # 0: el sistema operativo elige un puerto libre, asi los tests no chocan con un servicio local.
+    native-port: 0
+  bff:
+    hmac-secret: secreto-de-prueba-publico-solo-para-tests-0123456789
+  motor:
+    # Puerto 9 (discard): no hay nadie escuchando, el motor aparece DOWN salvo que el test
+    # levante un motor falso y sobrescriba el destino.
+    transport: grpc
+    grpc-target: 127.0.0.1:9
+    url: http://127.0.0.1:9
+    hmac-secret: secreto-motor-de-prueba-publico-solo-para-tests-01
+    connect-timeout: 1s
+    request-timeout: 3s
+  estado:
+    timeout-base-datos: 5s
+    timeout-motor: 3s
