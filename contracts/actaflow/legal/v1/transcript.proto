@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package actaflow.legal.v1;
+
+import "buf/validate/validate.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "TranscriptProto";
+option java_package = "com.actaflow.contracts.legal.v1";
+
+// Plaintext transcription types.
+//
+// These messages are NEVER sent in clear between services: the AI engine serializes them
+// and encrypts them with the content key (actaflow.crypto.v1.EncryptedBlob with
+// plaintext_type = "actaflow.legal.v1.TranscriptionResult"). Only the browser and, in
+// memory, the engine ever see them decrypted.
+
+// One continuous stretch of speech by one speaker.
+message TranscriptSegment {
+  // Participant who was speaking, as marked by the conciliator or by the speaker's own
+  // device ("assisted diarization").
+  string speaker_participant_id = 1 [(buf.validate.field).string.uuid = true];
+  // Start offset inside the audio segment, in milliseconds.
+  int64 start_ms = 2 [(buf.validate.field).int64.gte = 0];
+  // End offset inside the audio segment, in milliseconds.
+  int64 end_ms = 3 [(buf.validate.field).int64.gte = 0];
+  // Recognized text.
+  string text = 4 [(buf.validate.field).string.max_len = 20000];
+  // Average recognition confidence from 0 to 1.
+  float confidence = 5 [(buf.validate.field).float = {
+    gte: 0
+    lte: 1
+  }];
+}
+
+// Result of transcribing one audio segment.
+message TranscriptionResult {
+  // Segments in chronological order.
+  repeated TranscriptSegment segments = 1;
+  // BCP-47 language, for example "es-CO".
+  string language = 2;
+  // Recognition model, for example "faster-whisper-tiny-int8".
+  string model = 3;
+  // Duration of the audio, in milliseconds.
+  int64 audio_duration_ms = 4;
+  // Processing time divided by audio duration (below 1 means faster than real time).
+  float real_time_factor = 5;
+}
+
+// The transcript of a whole hearing, assembled in the browser from every segment.
+// Input of entity extraction.
+message HearingTranscript {
+  // Every segment of the hearing, in order.
+  repeated TranscriptSegment segments = 1 [(buf.validate.field).repeated.max_items = 5000];
+}
