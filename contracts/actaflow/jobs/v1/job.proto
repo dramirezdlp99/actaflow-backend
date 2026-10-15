@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package actaflow.jobs.v1;
+
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "JobProto";
+option java_package = "com.actaflow.contracts.jobs.v1";
+
+// Asynchronous jobs (transcription, extraction, template filling, PDF and seal).
+// Implemented by legal-case-service.
+//
+// The API never waits for heavy work. Workers take jobs from a PostgreSQL queue with
+// FOR UPDATE SKIP LOCKED, retry with exponential backoff, and only the job's own case
+// participants can read it.
+service JobService {
+  // Returns one job.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  // Streams the job's state until it finishes (DONE or FAILED), then ends.
+  rpc WatchJob(WatchJobRequest) returns (stream WatchJobResponse);
+}
+
+// Kind of job.
+enum JobKind {
+  // Never valid.
+  JOB_KIND_UNSPECIFIED = 0;
+  // Speech-to-text of one audio segment.
+  JOB_KIND_TRANSCRIPTION = 1;
+  // Legal entity extraction.
+  JOB_KIND_EXTRACTION = 2;
+  // Filling a template with confirmed entities.
+  JOB_KIND_TEMPLATE_FILL = 3;
+  // Rendering the final PDF and sealing it.
+  JOB_KIND_DOCUMENT_SEAL = 4;
+}
+
+// State of a job.
+enum JobState {
+  // Never valid.
+  JOB_STATE_UNSPECIFIED = 0;
+  // Waiting in the queue.
+  JOB_STATE_QUEUED = 1;
+  // A worker is running it.
+  JOB_STATE_RUNNING = 2;
+  // Waiting to retry after a failure.
+  JOB_STATE_RETRYING = 3;
+  // Finished successfully.
+  JOB_STATE_DONE = 4;
+  // Failed after every retry.
+  JOB_STATE_FAILED = 5;
+}
+
+// A job.
+message Job {
+  // Job identifier (UUID).
+  string id = 1;
+  // Kind.
+  JobKind kind = 2;
+  // State.
+  JobState state = 3;
+  // Case it belongs to.
+  string case_id = 4;
+  // Attempts made so far.
+  int32 attempts = 5;
+  // Safe explanation of the last failure, if any.
+  string last_error = 6;
+  // Encrypted result, when DONE (its plaintext_type tells how to parse it).
+  actaflow.crypto.v1.EncryptedBlob result = 7;
+  // When it was queued.
+  google.protobuf.Timestamp created_at = 8;
+  // When it finished, if it did.
+  google.protobuf.Timestamp finished_at = 9;
+}
+
+// Request for GetJob.
+message GetJobRequest {
+  // Job identifier.
+  string job_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of GetJob.
+message GetJobResponse {
+  // The job.
+  Job job = 1;
+}
+
+// Request for WatchJob.
+message WatchJobRequest {
+  // Job identifier.
+  string job_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// One state change of a watched job.
+message WatchJobResponse {
+  // The job after the change.
+  Job job = 1;
+}
