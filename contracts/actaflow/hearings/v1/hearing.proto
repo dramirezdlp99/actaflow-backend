@@ -1,0 +1,293 @@
+syntax = "proto3";
+
+package actaflow.hearings.v1;
+
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "HearingProto";
+option java_package = "com.actaflow.contracts.hearings.v1";
+
+// Live hearings: audio capture, transcription and entity extraction.
+// Implemented by legal-case-service, which queues the work for the AI engine.
+//
+// Flow of the case study (3.3):
+//   1. The browser captures the audio of each intervention in a Web Worker, splits it with
+//      voice-activity detection and seals each segment for the AI engine.
+//   2. SubmitAudioSegment stores the sealed segment and queues a transcription job. The engine
+//      transcribes it and labels it with the speaker marked in the room.
+//   3. When the hearing ends (or on demand), RequestEntityExtraction queues the extraction
+//      over the corrected transcript.
+//   4. ConfirmEntities stores what people confirmed; the minutes package then fills the template.
+//
+// The API never waits for the AI: every heavy step is an asynchronous job.
+service HearingService {
+  // Starts a hearing in a case. Only conciliators. At most one hearing in progress per case.
+  rpc StartHearing(StartHearingRequest) returns (StartHearingResponse);
+  // Ends the hearing in progress.
+  rpc EndHearing(EndHearingRequest) returns (EndHearingResponse);
+  // Returns one hearing.
+  rpc GetHearing(GetHearingRequest) returns (GetHearingResponse);
+  // Lists the hearings of a case.
+  rpc ListHearings(ListHearingsRequest) returns (ListHearingsResponse);
+  // Stores one sealed audio segment and queues its transcription.
+  // Idempotent by (hearing_id, sequence): re-sending after a network failure is safe.
+  rpc SubmitAudioSegment(SubmitAudioSegmentRequest) returns (SubmitAudioSegmentResponse);
+  // Lists the segments of a hearing with their encrypted transcripts, in order.
+  rpc ListSegments(ListSegmentsRequest) returns (ListSegmentsResponse);
+  // Queues entity extraction over a sealed, corrected transcript.
+  rpc RequestEntityExtraction(RequestEntityExtractionRequest) returns (RequestEntityExtractionResponse);
+  // Returns the latest extraction of a hearing (proposed and confirmed entities, encrypted).
+  rpc GetEntityExtraction(GetEntityExtractionRequest) returns (GetEntityExtractionResponse);
+  // Stores the entities as reviewed by a person (confirmed, corrected or rejected).
+  // Errors: ABORTED when `expected_revision` is stale (another reviewer saved first).
+  rpc ConfirmEntities(ConfirmEntitiesRequest) returns (ConfirmEntitiesResponse);
+  // Streams hearing events (segment transcribed, extraction ready) from a sequence number.
+  // Server streaming works over gRPC-Web too; the stream ends after five minutes and the
+  // client resumes from the last sequence it saw, which keeps Vercel functions short.
+  rpc WatchHearingEvents(WatchHearingEventsRequest) returns (stream WatchHearingEventsResponse);
+}
+
+// Lifecycle of a hearing.
+enum HearingState {
+  // Never valid.
+  HEARING_STATE_UNSPECIFIED = 0;
+  // Recording and transcribing.
+  HEARING_STATE_IN_PROGRESS = 1;
+  // Finished.
+  HEARING_STATE_ENDED = 2;
+}
+
+// Processing state of an audio segment or an extraction.
+enum ProcessingState {
+  // Never valid.
+  PROCESSING_STATE_UNSPECIFIED = 0;
+  // Queued.
+  PROCESSING_STATE_QUEUED = 1;
+  // Being processed by the AI engine.
+  PROCESSING_STATE_PROCESSING = 2;
+  // Done; the encrypted result is available.
+  PROCESSING_STATE_DONE = 3;
+  // Failed after every retry.
+  PROCESSING_STATE_FAILED = 4;
+}
+
+// A hearing.
+message Hearing {
+  // Hearing identifier (UUID).
+  string id = 1;
+  // Case it belongs to.
+  string case_id = 2;
+  // State.
+  HearingState state = 3;
+  // When it started.
+  google.protobuf.Timestamp started_at = 4;
+  // When it ended, if it did.
+  google.protobuf.Timestamp ended_at = 5;
+  // Segments received.
+  int32 segment_count = 6;
+  // Total audio received, in milliseconds.
+  int64 audio_duration_ms = 7;
+}
+
+// One audio segment and its transcription.
+message AudioSegment {
+  // Segment identifier (UUID).
+  string id = 1;
+  // Hearing it belongs to.
+  string hearing_id = 2;
+  // Position inside the hearing, from 0.
+  int32 sequence = 3;
+  // Participant speaking (plaintext metadata so the room can show who spoke when).
+  string speaker_participant_id = 4;
+  // Duration in milliseconds.
+  int64 duration_ms = 5;
+  // Transcription state.
+  ProcessingState state = 6;
+  // actaflow.legal.v1.TranscriptionResult encrypted with the segment's content key.
+  actaflow.crypto.v1.EncryptedBlob transcript = 7;
+  // The segment's content key encrypted with the case key, to decrypt the transcript.
+  actaflow.crypto.v1.EncryptedBlob content_key_for_case = 8;
+  // When it was received.
+  google.protobuf.Timestamp received_at = 9;
+}
+
+// Request for StartHearing.
+message StartHearingRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 2 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of StartHearing.
+message StartHearingResponse {
+  // The new hearing.
+  Hearing hearing = 1;
+}
+
+// Request for EndHearing.
+message EndHearingRequest {
+  // Hearing identifier.
+  string hearing_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of EndHearing.
+message EndHearingResponse {
+  // The ended hearing.
+  Hearing hearing = 1;
+}
+
+// Request for GetHearing.
+message GetHearingRequest {
+  // Hearing identifier.
+  string hearing_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of GetHearing.
+message GetHearingResponse {
+  // The hearing.
+  Hearing hearing = 1;
+}
+
+// Request for ListHearings.
+message ListHearingsRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of ListHearings.
+message ListHearingsResponse {
+  // Hearings of the case, newest first.
+  repeated Hearing hearings = 1;
+}
+
+// Request for SubmitAudioSegment.
+message SubmitAudioSegmentRequest {
+  // Hearing in progress.
+  string hearing_id = 1 [(buf.validate.field).string.uuid = true];
+  // Segment identifier generated in the browser (part of the encryption AAD).
+  string segment_id = 2 [(buf.validate.field).string.uuid = true];
+  // Position inside the hearing, from 0.
+  int32 sequence = 3 [(buf.validate.field).int32.gte = 0];
+  // Participant speaking.
+  string speaker_participant_id = 4 [(buf.validate.field).string.uuid = true];
+  // Duration in milliseconds, at most 30 seconds.
+  int64 duration_ms = 5 [(buf.validate.field).int64 = {
+    gt: 0
+    lte: 30000
+  }];
+  // actaflow.engine.v1.SealedAudioSegment sealed for the AI engine.
+  actaflow.crypto.v1.SealedEnvelope audio = 6 [(buf.validate.field).required = true];
+}
+
+// Response of SubmitAudioSegment.
+message SubmitAudioSegmentResponse {
+  // The stored segment, QUEUED.
+  AudioSegment segment = 1;
+}
+
+// Request for ListSegments.
+message ListSegmentsRequest {
+  // Hearing identifier.
+  string hearing_id = 1 [(buf.validate.field).string.uuid = true];
+  // Only segments with a sequence greater than this one (-1 for all).
+  int32 after_sequence = 2 [(buf.validate.field).int32.gte = -1];
+}
+
+// Response of ListSegments.
+message ListSegmentsResponse {
+  // Segments in order.
+  repeated AudioSegment segments = 1;
+}
+
+// Request for RequestEntityExtraction.
+message RequestEntityExtractionRequest {
+  // Hearing identifier.
+  string hearing_id = 1 [(buf.validate.field).string.uuid = true];
+  // Extraction identifier generated in the browser (part of the encryption AAD).
+  string extraction_id = 2 [(buf.validate.field).string.uuid = true];
+  // actaflow.engine.v1.ExtractionInput sealed for the AI engine.
+  actaflow.crypto.v1.SealedEnvelope input = 3 [(buf.validate.field).required = true];
+}
+
+// Response of RequestEntityExtraction.
+message RequestEntityExtractionResponse {
+  // The queued extraction.
+  EntityExtraction extraction = 1;
+}
+
+// An entity extraction and its review.
+message EntityExtraction {
+  // Extraction identifier.
+  string id = 1;
+  // Hearing it belongs to.
+  string hearing_id = 2;
+  // Processing state.
+  ProcessingState state = 3;
+  // actaflow.legal.v1.EntityExtractionResult proposed by the engine, encrypted with the content key.
+  actaflow.crypto.v1.EncryptedBlob proposed = 4;
+  // The content key encrypted with the case key.
+  actaflow.crypto.v1.EncryptedBlob content_key_for_case = 5;
+  // actaflow.legal.v1.EntityExtractionResult as reviewed by people, encrypted with the case key.
+  actaflow.crypto.v1.EncryptedBlob reviewed = 6;
+  // Revision of `reviewed`, for optimistic concurrency.
+  int64 revision = 7;
+  // Participant who saved the last review.
+  string reviewed_by_participant_id = 8;
+}
+
+// Request for GetEntityExtraction.
+message GetEntityExtractionRequest {
+  // Hearing identifier.
+  string hearing_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of GetEntityExtraction.
+message GetEntityExtractionResponse {
+  // The latest extraction.
+  EntityExtraction extraction = 1;
+}
+
+// Request for ConfirmEntities. Conciliators and assistants only.
+message ConfirmEntitiesRequest {
+  // Extraction identifier.
+  string extraction_id = 1 [(buf.validate.field).string.uuid = true];
+  // Revision the reviewer started from (0 for the first review).
+  int64 expected_revision = 2 [(buf.validate.field).int64.gte = 0];
+  // Reviewed actaflow.legal.v1.EntityExtractionResult encrypted with the case key.
+  actaflow.crypto.v1.EncryptedBlob reviewed = 3 [(buf.validate.field).required = true];
+}
+
+// Response of ConfirmEntities.
+message ConfirmEntitiesResponse {
+  // The extraction with the new review.
+  EntityExtraction extraction = 1;
+}
+
+// Request for WatchHearingEvents.
+message WatchHearingEventsRequest {
+  // Hearing identifier.
+  string hearing_id = 1 [(buf.validate.field).string.uuid = true];
+  // Resume after this event sequence (0 from the beginning).
+  int64 after_event_sequence = 2 [(buf.validate.field).int64.gte = 0];
+}
+
+// One hearing event.
+message WatchHearingEventsResponse {
+  // Monotonic sequence inside the hearing, to resume the stream.
+  int64 event_sequence = 1;
+  // What changed.
+  oneof event {
+    // A segment changed state (usually: transcribed).
+    AudioSegment segment_updated = 2;
+    // The extraction changed state or was reviewed.
+    EntityExtraction extraction_updated = 3;
+    // The hearing ended.
+    Hearing hearing_ended = 4;
+    // Keep-alive sent every 20 seconds so proxies do not close an idle stream.
+    google.protobuf.Timestamp heartbeat = 5;
+  }
+}
