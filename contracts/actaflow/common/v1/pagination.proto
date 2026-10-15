@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package actaflow.common.v1;
+
+import "buf/validate/validate.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "PaginationProto";
+option java_package = "com.actaflow.contracts.common.v1";
+
+// Cursor-based page request shared by every List RPC.
+//
+// Cursors are opaque: clients must send back exactly the token they received and
+// never build one themselves. Servers may reject a token that is older than one hour.
+message PageRequest {
+  // Maximum number of items to return. The server may return fewer.
+  int32 page_size = 1 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 100
+  }];
+  // Opaque cursor from a previous PageInfo.next_page_token. Empty for the first page.
+  string page_token = 2 [(buf.validate.field).string.max_len = 512];
+}
+
+// Page metadata returned by every List RPC.
+message PageInfo {
+  // Cursor for the next page. Empty when there are no more items.
+  string next_page_token = 1;
+}
