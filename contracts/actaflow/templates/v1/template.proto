@@ -1,0 +1,328 @@
+syntax = "proto3";
+
+package actaflow.templates.v1;
+
+import "actaflow/common/v1/pagination.proto";
+import "actaflow/common/v1/values.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "TemplateProto";
+option java_package = "com.actaflow.contracts.templates.v1";
+
+// Legal templates. Implemented by legal-case-service.
+//
+// Templates are not confidential (they contain no case data), so they are plaintext and the
+// published library is public: the frontend renders it with Incremental Static Regeneration
+// and revalidates it instantly when an admin publishes a new version.
+//
+// Templates are written in the ActaFlow template language:
+//   {{ partes.convocante.nombre }}                    variable
+//   {{ acuerdo.monto | moneda_en_letras }}            variable with formatter
+//   {% si acuerdo.cuotas > 0 %} ... {% fin %}         conditional
+//   {% para cada cuota en acuerdo.plan %} ... {% fin %} repeatable clause
+service TemplateService {
+  // Lists published templates. Public: needs a service signature but no user session.
+  rpc ListPublishedTemplates(ListPublishedTemplatesRequest) returns (ListPublishedTemplatesResponse);
+  // Returns the latest published version of a template by slug. Public.
+  rpc GetPublishedTemplate(GetPublishedTemplateRequest) returns (GetPublishedTemplateResponse);
+  // Parses and type-checks template source without saving it. Admins only.
+  rpc ValidateTemplate(ValidateTemplateRequest) returns (ValidateTemplateResponse);
+  // Renders template source with example data, to preview it. Admins only.
+  rpc PreviewTemplate(PreviewTemplateRequest) returns (PreviewTemplateResponse);
+  // Saves a new draft version of a template (creating the template if needed). Admins only.
+  // Errors: INVALID_ARGUMENT with reason TEMPLATE_SYNTAX_ERROR and the diagnostics.
+  rpc SaveTemplateDraft(SaveTemplateDraftRequest) returns (SaveTemplateDraftResponse);
+  // Publishes a draft version. Admins only. Triggers ISR revalidation in the frontend.
+  rpc PublishTemplate(PublishTemplateRequest) returns (PublishTemplateResponse);
+  // Lists every version of a template, drafts included. Admins only.
+  rpc ListTemplateVersions(ListTemplateVersionsRequest) returns (ListTemplateVersionsResponse);
+}
+
+// Kind of document a template produces.
+enum TemplateCategory {
+  // Never valid.
+  TEMPLATE_CATEGORY_UNSPECIFIED = 0;
+  // Acta de conciliacion con acuerdo total o parcial.
+  TEMPLATE_CATEGORY_CONCILIATION_AGREEMENT = 1;
+  // Constancia de no acuerdo.
+  TEMPLATE_CATEGORY_NO_AGREEMENT_RECORD = 2;
+  // Acta de mediacion.
+  TEMPLATE_CATEGORY_MEDIATION_MINUTE = 3;
+  // Contract.
+  TEMPLATE_CATEGORY_CONTRACT = 4;
+}
+
+// Data type of a template variable.
+enum VariableType {
+  // Never valid.
+  VARIABLE_TYPE_UNSPECIFIED = 0;
+  // Free text.
+  VARIABLE_TYPE_TEXT = 1;
+  // An actaflow.common.v1.Money.
+  VARIABLE_TYPE_MONEY = 2;
+  // An actaflow.common.v1.CalendarDate.
+  VARIABLE_TYPE_DATE = 3;
+  // An integer.
+  VARIABLE_TYPE_INTEGER = 4;
+  // A party (name, document, role).
+  VARIABLE_TYPE_PARTY = 5;
+  // A list of items, used by repeatable clauses.
+  VARIABLE_TYPE_LIST = 6;
+  // True or false, used by conditionals.
+  VARIABLE_TYPE_BOOLEAN = 7;
+}
+
+// Where a variable's value usually comes from when the AI fills the template.
+enum EntitySource {
+  // Typed by a person.
+  ENTITY_SOURCE_UNSPECIFIED = 0;
+  // From a PartyIdentification.
+  ENTITY_SOURCE_PARTY = 1;
+  // From a MonetaryAmount.
+  ENTITY_SOURCE_AMOUNT = 2;
+  // From a PaymentDeadline.
+  ENTITY_SOURCE_DEADLINE = 3;
+  // From a DeliveryCommitment.
+  ENTITY_SOURCE_COMMITMENT = 4;
+  // From a PenaltyClause.
+  ENTITY_SOURCE_PENALTY = 5;
+  // From the case metadata (number, date, city).
+  ENTITY_SOURCE_CASE = 6;
+}
+
+// A variable a template expects.
+message TemplateVariable {
+  // Dotted path, for example "acuerdo.monto".
+  string path = 1 [(buf.validate.field).string.pattern = "^[a-z_][a-z0-9_]*(\\.[a-z_][a-z0-9_]*)*$"];
+  // Data type.
+  VariableType type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Label for people, in Spanish, for example "Monto acordado".
+  string label = 3 [(buf.validate.field).string.max_len = 120];
+  // Whether the minute can be closed without it.
+  bool required = 4;
+  // Usual source of the value.
+  EntitySource source = 5 [(buf.validate.field).enum.defined_only = true];
+}
+
+// Lifecycle of a template version.
+enum VersionState {
+  // Never valid.
+  VERSION_STATE_UNSPECIFIED = 0;
+  // Editable draft.
+  VERSION_STATE_DRAFT = 1;
+  // Published and immutable.
+  VERSION_STATE_PUBLISHED = 2;
+  // Replaced by a newer published version.
+  VERSION_STATE_SUPERSEDED = 3;
+}
+
+// One version of a template.
+message Template {
+  // Template identifier (UUID), shared by all its versions.
+  string id = 1;
+  // URL slug, for example "acta-conciliacion-arrendamiento".
+  string slug = 2;
+  // Title.
+  string title = 3;
+  // Short description.
+  string description = 4;
+  // Category.
+  TemplateCategory category = 5;
+  // Version number, from 1.
+  int32 version = 6;
+  // State of this version.
+  VersionState state = 7;
+  // Source in the template language.
+  string source = 8;
+  // Variables found in the source.
+  repeated TemplateVariable variables = 9;
+  // When this version was published.
+  google.protobuf.Timestamp published_at = 10;
+  // When this version was last saved.
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// A problem found in template source.
+message TemplateDiagnostic {
+  // Severity.
+  DiagnosticSeverity severity = 1;
+  // 1-based line.
+  int32 line = 2;
+  // 1-based column.
+  int32 column = 3;
+  // Explanation in Spanish, for example "Falta {% fin %} para el bloque abierto en la línea 12".
+  string message = 4;
+}
+
+// Severity of a diagnostic.
+enum DiagnosticSeverity {
+  // Never valid.
+  DIAGNOSTIC_SEVERITY_UNSPECIFIED = 0;
+  // Prevents saving.
+  DIAGNOSTIC_SEVERITY_ERROR = 1;
+  // Allowed, but probably a mistake.
+  DIAGNOSTIC_SEVERITY_WARNING = 2;
+}
+
+// A value for preview or filling: one of the variable types.
+message TemplateValue {
+  // The value.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    // Text.
+    string text = 1;
+    // Money.
+    actaflow.common.v1.Money money = 2;
+    // Date.
+    actaflow.common.v1.CalendarDate date = 3;
+    // Integer.
+    int64 integer = 4;
+    // Boolean.
+    bool boolean = 5;
+    // Nested object (a party, an installment).
+    TemplateObject object = 6;
+    // List of values.
+    TemplateList list = 7;
+  }
+}
+
+// A nested object of named values.
+message TemplateObject {
+  // Fields by name.
+  map<string, TemplateValue> fields = 1;
+}
+
+// A list of values.
+message TemplateList {
+  // Items in order.
+  repeated TemplateValue items = 1;
+}
+
+// Request for ListPublishedTemplates.
+message ListPublishedTemplatesRequest {
+  // Paging.
+  actaflow.common.v1.PageRequest page = 1 [(buf.validate.field).required = true];
+  // Optional filter by category.
+  TemplateCategory category = 2 [(buf.validate.field).enum.defined_only = true];
+}
+
+// Response of ListPublishedTemplates.
+message ListPublishedTemplatesResponse {
+  // Latest published version of each template (source omitted to keep the list small).
+  repeated Template templates = 1;
+  // Paging.
+  actaflow.common.v1.PageInfo page_info = 2;
+}
+
+// Request for GetPublishedTemplate.
+message GetPublishedTemplateRequest {
+  // Template slug.
+  string slug = 1 [(buf.validate.field).string.pattern = "^[a-z0-9]+(-[a-z0-9]+)*$"];
+}
+
+// Response of GetPublishedTemplate.
+message GetPublishedTemplateResponse {
+  // Latest published version, with source.
+  Template template = 1;
+}
+
+// Request for ValidateTemplate.
+message ValidateTemplateRequest {
+  // Source to check.
+  string source = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 200000
+  }];
+}
+
+// Response of ValidateTemplate.
+message ValidateTemplateResponse {
+  // Problems found; empty when the source is valid.
+  repeated TemplateDiagnostic diagnostics = 1;
+  // Variables found.
+  repeated TemplateVariable variables = 2;
+}
+
+// Request for PreviewTemplate.
+message PreviewTemplateRequest {
+  // Source to render.
+  string source = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 200000
+  }];
+  // Example values by variable path. Missing values render as visible placeholders.
+  map<string, TemplateValue> values = 2;
+}
+
+// Response of PreviewTemplate.
+message PreviewTemplateResponse {
+  // Rendered document as sanitized HTML.
+  string html = 1;
+  // Problems found.
+  repeated TemplateDiagnostic diagnostics = 2;
+}
+
+// Request for SaveTemplateDraft.
+message SaveTemplateDraftRequest {
+  // Existing template identifier; empty to create a new template.
+  string template_id = 1 [(buf.validate.field) = {
+    ignore: IGNORE_IF_ZERO_VALUE
+    string: {uuid: true}
+  }];
+  // URL slug (only used when creating).
+  string slug = 2 [(buf.validate.field).string.pattern = "^[a-z0-9]+(-[a-z0-9]+)*$"];
+  // Title.
+  string title = 3 [(buf.validate.field).string = {
+    min_len: 3
+    max_len: 160
+  }];
+  // Short description.
+  string description = 4 [(buf.validate.field).string.max_len = 500];
+  // Category.
+  TemplateCategory category = 5 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Source in the template language.
+  string source = 6 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 200000
+  }];
+}
+
+// Response of SaveTemplateDraft.
+message SaveTemplateDraftResponse {
+  // The saved draft version.
+  Template template = 1;
+}
+
+// Request for PublishTemplate.
+message PublishTemplateRequest {
+  // Template identifier.
+  string template_id = 1 [(buf.validate.field).string.uuid = true];
+  // Draft version to publish.
+  int32 version = 2 [(buf.validate.field).int32.gte = 1];
+}
+
+// Response of PublishTemplate.
+message PublishTemplateResponse {
+  // The published version.
+  Template template = 1;
+}
+
+// Request for ListTemplateVersions.
+message ListTemplateVersionsRequest {
+  // Template identifier.
+  string template_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of ListTemplateVersions.
+message ListTemplateVersionsResponse {
+  // Versions, newest first, without source.
+  repeated Template versions = 1;
+}
