@@ -1,0 +1,279 @@
+syntax = "proto3";
+
+package actaflow.engine.v1;
+
+import "actaflow/common/v1/values.proto";
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "EngineProto";
+option java_package = "com.actaflow.contracts.engine.v1";
+
+// The AI engine: speech-to-text and legal entity extraction, running on our own server.
+//
+// Because of professional secrecy no audio or text is ever sent to third-party AI APIs.
+// The engine is below the gateway: only legal-case-service calls it, and every call is
+// signed (HMAC in the gRPC metadata). It also implements
+// actaflow.system.v1.ServiceStatusService and actaflow.crypto.v1.ProcessorKeyService.
+//
+// Content arrives sealed for the engine (actaflow.crypto.v1.SealedEnvelope); the engine opens
+// it in memory, processes it and returns the result encrypted with the same content key.
+// Nothing is written to disk.
+service TranscriptionService {
+  // Transcribes one sealed audio segment (one intervention, up to 30 seconds).
+  // This is the production path: unary calls work over gRPC-Web on HTTP/1.1.
+  // Errors: INVALID_ARGUMENT (undecodable audio), FAILED_PRECONDITION (model not loaded),
+  // UNAUTHENTICATED (cannot unwrap the content key).
+  rpc TranscribeSegment(TranscribeSegmentRequest) returns (TranscribeSegmentResponse);
+  // Live transcription over a bidirectional stream: the caller sends audio chunks while
+  // the engine sends back partial results. Requires native gRPC over HTTP/2, so it is
+  // available locally and in CI but not through Render Free's HTTP/1.1 proxy.
+  rpc StreamTranscription(stream StreamTranscriptionRequest) returns (stream StreamTranscriptionResponse);
+}
+
+// Audio container and codec.
+enum AudioEncoding {
+  // Never valid.
+  AUDIO_ENCODING_UNSPECIFIED = 0;
+  // Opus in an Ogg container (what browsers produce with WebCodecs).
+  AUDIO_ENCODING_OGG_OPUS = 1;
+  // 16-bit PCM WAV, mono, 16 kHz (fallback when WebCodecs is not available).
+  AUDIO_ENCODING_WAV_PCM16 = 2;
+}
+
+// Hints that improve recognition of proper names and legal vocabulary.
+// Sealed together with the audio, because names are confidential.
+message RecognitionHints {
+  // Names of the parties and attorneys ("María Fernanda López").
+  repeated string names = 1 [(buf.validate.field).repeated = {
+    max_items: 30
+    items: {
+      string: {max_len: 120}
+    }
+  }];
+  // Extra vocabulary ("convocante", "cláusula penal", a street name).
+  repeated string vocabulary = 2 [(buf.validate.field).repeated = {
+    max_items: 100
+    items: {
+      string: {max_len: 60}
+    }
+  }];
+}
+
+// Plaintext sealed inside TranscribeSegmentRequest.audio
+// (plaintext_type = "actaflow.engine.v1.SealedAudioSegment").
+message SealedAudioSegment {
+  // Encoded audio bytes.
+  bytes audio = 1 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 1500000
+  }];
+  // How the audio is encoded.
+  AudioEncoding encoding = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Participant speaking during this segment.
+  string speaker_participant_id = 3 [(buf.validate.field).string.uuid = true];
+  // Recognition hints.
+  RecognitionHints hints = 4;
+}
+
+// Request for TranscribeSegment.
+message TranscribeSegmentRequest {
+  // Case the audio belongs to (part of the encryption AAD).
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Segment identifier (part of the encryption AAD).
+  string segment_id = 2 [(buf.validate.field).string.uuid = true];
+  // SealedAudioSegment sealed for the engine.
+  actaflow.crypto.v1.SealedEnvelope audio = 3 [(buf.validate.field).required = true];
+  // BCP-47 language. Only "es" and "es-CO" are supported.
+  string language = 4 [(buf.validate.field).string = {
+    in: [
+      "es",
+      "es-CO"
+    ]
+  }];
+}
+
+// Response of TranscribeSegment.
+message TranscribeSegmentResponse {
+  // actaflow.legal.v1.TranscriptionResult encrypted with the segment's content key.
+  actaflow.crypto.v1.EncryptedBlob transcript = 1;
+}
+
+// One message of the live transcription stream (client to engine).
+message StreamTranscriptionRequest {
+  // First message: session parameters. Following messages: audio chunks.
+  oneof payload {
+    option (buf.validate.oneof).required = true;
+    // Must be the first message.
+    StreamTranscriptionStart start = 1;
+    // Audio chunk encrypted with the content key opened in `start`.
+    actaflow.crypto.v1.EncryptedBlob chunk = 2;
+  }
+}
+
+// Parameters of a live transcription session.
+message StreamTranscriptionStart {
+  // Case the audio belongs to.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Session identifier.
+  string session_id = 2 [(buf.validate.field).string.uuid = true];
+  // The content key wrapped for the engine.
+  actaflow.crypto.v1.WrappedKey content_key = 3 [(buf.validate.field).required = true];
+  // Encoding of every chunk.
+  AudioEncoding encoding = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// One message of the live transcription stream (engine to client).
+message StreamTranscriptionResponse {
+  // Partial actaflow.legal.v1.TranscriptionResult, encrypted with the content key.
+  actaflow.crypto.v1.EncryptedBlob partial = 1;
+  // True when this result will not change any more.
+  bool final = 2;
+}
+
+// Legal entity extraction from a transcript.
+service ExtractionService {
+  // Extracts parties, amounts, deadlines, commitments and penalty clauses.
+  rpc ExtractEntities(ExtractEntitiesRequest) returns (ExtractEntitiesResponse);
+}
+
+// Plaintext sealed inside ExtractEntitiesRequest.input
+// (plaintext_type = "actaflow.engine.v1.ExtractionInput").
+message ExtractionInput {
+  // The text to analyze: the hearing transcript, already corrected by people.
+  string text = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 200000
+  }];
+  // Date of the hearing, to resolve relative deadlines ("dentro de los 30 días siguientes").
+  actaflow.common.v1.CalendarDate reference_date = 2 [(buf.validate.field).required = true];
+  // Known participants, to match the people mentioned with the case participants.
+  repeated KnownParticipant participants = 3 [(buf.validate.field).repeated.max_items = 30];
+}
+
+// A participant the engine may match names against.
+message KnownParticipant {
+  // Participant identifier.
+  string participant_id = 1 [(buf.validate.field).string.uuid = true];
+  // Name as registered.
+  string display_name = 2 [(buf.validate.field).string.max_len = 120];
+}
+
+// Request for ExtractEntities.
+message ExtractEntitiesRequest {
+  // Case (part of the encryption AAD).
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Extraction identifier (part of the encryption AAD).
+  string extraction_id = 2 [(buf.validate.field).string.uuid = true];
+  // ExtractionInput sealed for the engine.
+  actaflow.crypto.v1.SealedEnvelope input = 3 [(buf.validate.field).required = true];
+}
+
+// Response of ExtractEntities.
+message ExtractEntitiesResponse {
+  // actaflow.legal.v1.EntityExtractionResult encrypted with the content key.
+  actaflow.crypto.v1.EncryptedBlob entities = 1;
+}
+
+// Measurements of the engine in its real environment (used to choose the model).
+service EngineDiagnosticsService {
+  // Runs the speech-to-text benchmark on the bundled Spanish sample, one isolated
+  // subprocess per model so running out of memory is reported instead of crashing.
+  // Only one benchmark runs at a time (FAILED_PRECONDITION otherwise).
+  rpc RunBenchmark(RunBenchmarkRequest) returns (RunBenchmarkResponse);
+}
+
+// Speech-to-text model sizes the engine can load.
+enum ModelSize {
+  // Never valid.
+  MODEL_SIZE_UNSPECIFIED = 0;
+  // faster-whisper tiny (production on Render Free).
+  MODEL_SIZE_TINY = 1;
+  // faster-whisper base.
+  MODEL_SIZE_BASE = 2;
+  // faster-whisper small (does not fit in 512 MB).
+  MODEL_SIZE_SMALL = 3;
+}
+
+// Outcome of measuring one model.
+enum BenchmarkOutcome {
+  // Never valid.
+  BENCHMARK_OUTCOME_UNSPECIFIED = 0;
+  // Measured successfully.
+  BENCHMARK_OUTCOME_OK = 1;
+  // The operating system killed the process for lack of memory.
+  BENCHMARK_OUTCOME_OUT_OF_MEMORY = 2;
+  // It did not finish within the time limit.
+  BENCHMARK_OUTCOME_TIMEOUT = 3;
+  // It failed for another reason (see detail).
+  BENCHMARK_OUTCOME_ERROR = 4;
+  // The model is not installed in the image.
+  BENCHMARK_OUTCOME_NOT_INSTALLED = 5;
+}
+
+// Request for RunBenchmark.
+message RunBenchmarkRequest {
+  // Models to measure, without repetitions.
+  repeated ModelSize models = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 3
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  // Also load the spaCy model, to measure the memory of the full pipeline.
+  bool include_nlp = 2;
+}
+
+// Limits of the container the engine runs in, read from cgroup v2.
+message ContainerLimits {
+  // Memory limit in bytes, 0 when unlimited.
+  int64 memory_limit_bytes = 1;
+  // CPU quota in cores (0.15 means 15 % of one core), 0 when unlimited.
+  double cpu_quota_cores = 2;
+  // CPUs visible to the process.
+  int32 visible_cpus = 3;
+}
+
+// Measurement of one model.
+message ModelBenchmark {
+  // Model measured.
+  ModelSize model = 1;
+  // Outcome.
+  BenchmarkOutcome outcome = 2;
+  // Explanation when the outcome is not OK.
+  string detail = 3;
+  // Seconds to load the model.
+  double load_seconds = 4;
+  // Seconds to transcribe the sample.
+  double transcription_seconds = 5;
+  // Duration of the sample in seconds.
+  double audio_seconds = 6;
+  // transcription_seconds / audio_seconds.
+  double real_time_factor = 7;
+  // Peak resident memory of the measuring process, in bytes.
+  int64 peak_memory_bytes = 8;
+  // Word error rate against the script the sample was read from.
+  double word_error_rate = 9;
+  // Recognized text (the sample is public, not case content).
+  string text = 10;
+}
+
+// Response of RunBenchmark.
+message RunBenchmarkResponse {
+  // Limits of the container.
+  ContainerLimits limits = 1;
+  // One measurement per requested model, in request order.
+  repeated ModelBenchmark results = 2;
+}
