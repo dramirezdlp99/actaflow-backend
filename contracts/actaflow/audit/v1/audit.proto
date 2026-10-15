@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package actaflow.audit.v1;
+
+import "actaflow/common/v1/pagination.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "AuditProto";
+option java_package = "com.actaflow.contracts.audit.v1";
+
+// Who saw or changed what (data layer requirement). Implemented by legal-case-service.
+// Entries are append-only and contain metadata only. Readable by the case's conciliators.
+service AuditService {
+  // Lists the audit trail of a case, newest first.
+  rpc ListAuditEntries(ListAuditEntriesRequest) returns (ListAuditEntriesResponse);
+}
+
+// Kind of audited action.
+enum AuditAction {
+  // Never valid.
+  AUDIT_ACTION_UNSPECIFIED = 0;
+  // Read something (case, attachment, document, transcript).
+  AUDIT_ACTION_READ = 1;
+  // Created something.
+  AUDIT_ACTION_CREATE = 2;
+  // Changed something.
+  AUDIT_ACTION_UPDATE = 3;
+  // Deleted something.
+  AUDIT_ACTION_DELETE = 4;
+  // Granted or revoked access.
+  AUDIT_ACTION_ACCESS_CHANGE = 5;
+  // Raw audio was deleted by the retention policy.
+  AUDIT_ACTION_RETENTION_PURGE = 6;
+}
+
+// One audit entry.
+message AuditEntry {
+  // Entry identifier.
+  string id = 1;
+  // Case.
+  string case_id = 2;
+  // Action.
+  AuditAction action = 3;
+  // Kind of resource, for example "attachment" or "final_document".
+  string resource_type = 4;
+  // Resource identifier.
+  string resource_id = 5;
+  // Account that acted (empty for system actions such as retention).
+  string actor_account_id = 6;
+  // Display name of the actor at the time.
+  string actor_display_name = 7;
+  // When.
+  google.protobuf.Timestamp occurred_at = 8;
+}
+
+// Request for ListAuditEntries.
+message ListAuditEntriesRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Paging.
+  actaflow.common.v1.PageRequest page = 2 [(buf.validate.field).required = true];
+}
+
+// Response of ListAuditEntries.
+message ListAuditEntriesResponse {
+  // Entries of this page.
+  repeated AuditEntry entries = 1;
+  // Paging.
+  actaflow.common.v1.PageInfo page_info = 2;
+}
