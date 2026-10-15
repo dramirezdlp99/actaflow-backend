@@ -82,7 +82,7 @@ class IdentityServiceIntegracionTest {
         assertEquals("database", baseDatos.getId());
         assertEquals(ComponentKind.COMPONENT_KIND_DATABASE, baseDatos.getKind());
         assertEquals(HealthState.HEALTH_STATE_OK, baseDatos.getState());
-        assertEquals("1", baseDatos.getVersion());
+        assertEquals("2", baseDatos.getVersion());
     }
 
     @Test
@@ -110,7 +110,14 @@ class IdentityServiceIntegracionTest {
                 "select version from identity.flyway_schema_history where success and version is not null"
                         + " order by installed_rank",
                 String.class);
-        assertEquals(List.of("1"), versiones);
+        assertEquals(List.of("1", "2"), versiones);
+    }
+
+    @Test
+    void elPrimerArranqueCreoLaOrganizacionYLaInvitacionDelAdministrador() {
+        assertEquals(1, jdbc.queryForObject("select count(*) from identity.organization", Integer.class));
+        assertEquals(1, jdbc.queryForObject("select count(*) from identity.invitation where role = 'ADMIN'"
+                + " and email = 'admin@prueba.test'", Integer.class));
     }
 
     @Test
