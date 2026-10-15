@@ -64,6 +64,17 @@ actaflow:
     web-deadline: 30s
   bff:
     hmac-secret: ${ACTAFLOW_IDENTITY_HMAC_SECRET:}
+  seguridad:
+    # Entra en el hash de verificadores, tokens de refresco, invitaciones y codigos de recuperacion.
+    pepper: ${ACTAFLOW_IDENTITY_PEPPER:}
+    # Semilla de la clave Ed25519 que firma los tokens de acceso.
+    token-secret: ${ACTAFLOW_IDENTITY_TOKEN_SECRET:}
+    access-token-ttl: 15m
+  arranque:
+    # Solo para el primer despliegue: crea la organizacion y la invitacion del primer administrador.
+    organization-name: ${ACTAFLOW_BOOTSTRAP_ORGANIZATION:}
+    admin-email: ${ACTAFLOW_BOOTSTRAP_ADMIN_EMAIL:}
+    invitation-token: ${ACTAFLOW_BOOTSTRAP_INVITATION_TOKEN:}
   estado:
     timeout-base-datos: 15s
 
