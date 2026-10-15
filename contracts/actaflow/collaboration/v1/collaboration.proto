@@ -1,0 +1,230 @@
+syntax = "proto3";
+
+package actaflow.collaboration.v1;
+
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "CollaborationProto";
+option java_package = "com.actaflow.contracts.collaboration.v1";
+
+// Real-time collaborative editing of a minute. Implemented by legal-case-service.
+//
+// The minute is a CRDT document (Yjs). Every update is encrypted with the case key in the
+// browser; the server only orders, stores and relays ciphertext, so it cannot read the minute.
+//
+// Two channels share these messages:
+//   * this RPC service, used by the offline outbox to sync when there is no live connection;
+//   * a WebSocket directly to legal-case-service (Vercel functions cannot keep long-lived
+//     sockets). Its frames are ClientFrame and ServerFrame below, serialized as binary
+//     protobuf, so the WebSocket is covered by the contract too.
+//
+// No duplicated requests: every update has a client-generated UUID; the server stores it once
+// and acknowledges duplicates without relaying them again.
+service CollaborationService {
+  // Issues a single-use ticket (valid for 60 seconds) to open the WebSocket. The BFF calls it,
+  // so the browser never holds a long-lived credential for the socket.
+  rpc IssueCollaborationTicket(IssueCollaborationTicketRequest) returns (IssueCollaborationTicketResponse);
+  // Returns the latest snapshot and every update after it, for a client that was offline.
+  rpc GetDocumentState(GetDocumentStateRequest) returns (GetDocumentStateResponse);
+  // Stores updates made offline. Idempotent per update_id.
+  rpc PushUpdates(PushUpdatesRequest) returns (PushUpdatesResponse);
+  // Replaces a prefix of the update log with an encrypted snapshot produced by a client
+  // (the server cannot merge encrypted updates itself). Keeps the log small.
+  rpc CompactDocument(CompactDocumentRequest) returns (CompactDocumentResponse);
+}
+
+// One encrypted CRDT update.
+message EncryptedUpdate {
+  // Client-generated UUID; the deduplication key.
+  string update_id = 1 [(buf.validate.field).string.uuid = true];
+  // Yjs update encrypted with the case key.
+  actaflow.crypto.v1.EncryptedBlob update = 2 [(buf.validate.field).required = true];
+}
+
+// An update as stored by the server, with its position in the log.
+message SequencedUpdate {
+  // The update.
+  EncryptedUpdate update = 1;
+  // Position in the document log, assigned by the server, strictly increasing.
+  int64 sequence = 2;
+  // Participant who sent it.
+  string author_participant_id = 3;
+  // When the server received it.
+  google.protobuf.Timestamp received_at = 4;
+}
+
+// Request for IssueCollaborationTicket.
+message IssueCollaborationTicketRequest {
+  // Minute to edit.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of IssueCollaborationTicket.
+message IssueCollaborationTicketResponse {
+  // Opaque single-use ticket.
+  string ticket = 1;
+  // WebSocket URL of legal-case-service.
+  string websocket_url = 2;
+  // When the ticket expires.
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+// Request for GetDocumentState.
+message GetDocumentStateRequest {
+  // Minute identifier.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+  // Last sequence the client already has (0 for everything).
+  int64 after_sequence = 2 [(buf.validate.field).int64.gte = 0];
+}
+
+// Response of GetDocumentState.
+message GetDocumentStateResponse {
+  // Latest snapshot newer than after_sequence, if any.
+  actaflow.crypto.v1.EncryptedBlob snapshot = 1;
+  // Sequence the snapshot covers.
+  int64 snapshot_sequence = 2;
+  // Updates after the snapshot (or after after_sequence), in order.
+  repeated SequencedUpdate updates = 3;
+}
+
+// Request for PushUpdates.
+message PushUpdatesRequest {
+  // Minute identifier.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+  // Updates to store, in the order they were made.
+  repeated EncryptedUpdate updates = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 200
+  }];
+}
+
+// Response of PushUpdates.
+message PushUpdatesResponse {
+  // Sequence assigned to each update, in request order (duplicates get their original one).
+  repeated int64 sequences = 1;
+}
+
+// Request for CompactDocument.
+message CompactDocumentRequest {
+  // Minute identifier.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+  // Encrypted Yjs state that already contains every update up to covers_sequence.
+  actaflow.crypto.v1.EncryptedBlob snapshot = 2 [(buf.validate.field).required = true];
+  // Last sequence included in the snapshot.
+  int64 covers_sequence = 3 [(buf.validate.field).int64.gte = 1];
+}
+
+// Response of CompactDocument.
+message CompactDocumentResponse {
+  // Updates removed from the log.
+  int64 removed_updates = 1;
+}
+
+// Presence of one participant, shown as cursors and avatars.
+message Presence {
+  // Participant.
+  string participant_id = 1;
+  // Name.
+  string display_name = 2;
+  // Encrypted Yjs awareness state (cursor position, selection, typing).
+  actaflow.crypto.v1.EncryptedBlob awareness = 3;
+}
+
+// Frame sent by the browser over the WebSocket.
+message ClientFrame {
+  // Frame content.
+  oneof frame {
+    option (buf.validate.oneof).required = true;
+    // First frame: authenticates with the single-use ticket.
+    Hello hello = 1;
+    // A new local edit.
+    EncryptedUpdate update = 2;
+    // Cursor and selection changes (not persisted).
+    actaflow.crypto.v1.EncryptedBlob awareness = 3;
+    // Keep-alive.
+    google.protobuf.Timestamp ping = 4;
+  }
+}
+
+// First frame of a WebSocket session.
+message Hello {
+  // Ticket from IssueCollaborationTicket.
+  string ticket = 1 [(buf.validate.field).string = {
+    min_len: 32
+    max_len: 128
+  }];
+  // Last sequence the client has, so the server sends only what is missing.
+  int64 after_sequence = 2 [(buf.validate.field).int64.gte = 0];
+}
+
+// Frame sent by the server over the WebSocket.
+message ServerFrame {
+  // Frame content.
+  oneof frame {
+    // Session accepted; carries what the client missed.
+    Welcome welcome = 1;
+    // An update from another participant.
+    SequencedUpdate update = 2;
+    // Acknowledgement of one of this client's updates.
+    Ack ack = 3;
+    // Presence of the participants connected right now.
+    PresenceList presence = 4;
+    // Keep-alive answer.
+    google.protobuf.Timestamp pong = 5;
+    // Fatal problem; the server closes the socket after sending it.
+    SessionError error = 6;
+  }
+}
+
+// Session accepted.
+message Welcome {
+  // Participant identifier of this connection.
+  string participant_id = 1;
+  // Snapshot newer than the client's after_sequence, if any.
+  actaflow.crypto.v1.EncryptedBlob snapshot = 2;
+  // Sequence of that snapshot.
+  int64 snapshot_sequence = 3;
+  // Updates the client missed.
+  repeated SequencedUpdate updates = 4;
+}
+
+// Acknowledgement of an update.
+message Ack {
+  // The client's update.
+  string update_id = 1;
+  // Its sequence.
+  int64 sequence = 2;
+  // True when the server already had it (nothing was relayed again).
+  bool duplicate = 3;
+}
+
+// Everyone connected right now.
+message PresenceList {
+  // Participants online.
+  repeated Presence participants = 1;
+}
+
+// Why the server closes the session.
+enum SessionErrorCode {
+  // Never valid.
+  SESSION_ERROR_CODE_UNSPECIFIED = 0;
+  // Missing, expired or already used ticket.
+  SESSION_ERROR_CODE_INVALID_TICKET = 1;
+  // The minute was closed; no more edits are accepted.
+  SESSION_ERROR_CODE_MINUTE_CLOSED = 2;
+  // The participant was removed from the case.
+  SESSION_ERROR_CODE_ACCESS_REVOKED = 3;
+  // Malformed frame or contract violation.
+  SESSION_ERROR_CODE_PROTOCOL_VIOLATION = 4;
+}
+
+// Fatal session error.
+message SessionError {
+  // Code.
+  SessionErrorCode code = 1;
+  // Explanation for logs.
+  string message = 2;
+}
