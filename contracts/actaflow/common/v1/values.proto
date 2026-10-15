@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package actaflow.common.v1;
+
+import "buf/validate/validate.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "ValuesProto";
+option java_package = "com.actaflow.contracts.common.v1";
+
+// An amount of money in a specific currency.
+//
+// Same shape as google.type.Money: `units` holds the whole part and `nanos` the
+// fractional part, so no floating point is ever involved. Colombian pesos usually
+// have nanos = 0.
+message Money {
+  option (buf.validate.message).cel = {
+    id: "money.sign"
+    message: "units and nanos must have the same sign"
+    expression: "(this.units >= 0 && this.nanos >= 0) || (this.units <= 0 && this.nanos <= 0)"
+  };
+
+  // ISO 4217 currency code, for example "COP" or "USD".
+  string currency_code = 1 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // Whole units of the amount.
+  int64 units = 2;
+  // Fractional part in nano units (10^-9).
+  int32 nanos = 3 [(buf.validate.field).int32 = {
+    gte: -999999999
+    lte: 999999999
+  }];
+}
+
+// A calendar date without time zone, as used in legal deadlines
+// ("on or before 30 November 2026").
+message CalendarDate {
+  // Year, for example 2026.
+  int32 year = 1 [(buf.validate.field).int32 = {
+    gte: 1900
+    lte: 2200
+  }];
+  // Month of the year, 1 to 12.
+  int32 month = 2 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 12
+  }];
+  // Day of the month, 1 to 31. The server rejects impossible dates such as 31 April.
+  int32 day = 3 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 31
+  }];
+}
+
+// Half-open range of characters [start, end) inside a text, counted in Unicode code points.
+message TextSpan {
+  option (buf.validate.message).cel = {
+    id: "text_span.order"
+    message: "end must be greater than or equal to start"
+    expression: "this.end >= this.start"
+  };
+
+  // First character of the range.
+  int32 start = 1 [(buf.validate.field).int32.gte = 0];
+  // Character after the last one in the range.
+  int32 end = 2 [(buf.validate.field).int32.gte = 0];
+}
