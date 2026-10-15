@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+package actaflow.cases.v1;
+
+import "actaflow/cases/v1/case.proto";
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "ParticipantProto";
+option java_package = "com.actaflow.contracts.cases.v1";
+
+// People in a case and the distribution of the case key.
+//
+// The server never holds the case key in clear: an existing participant wraps it for each
+// new participant's public key in the browser (GrantCaseKey).
+service ParticipantService {
+  // Lists the participants of a case.
+  rpc ListParticipants(ListParticipantsRequest) returns (ListParticipantsResponse);
+  // Invites a person by email to the case. Only conciliators.
+  // If the person has no account yet, the invitation stays pending and the key is granted later.
+  rpc InviteParticipant(InviteParticipantRequest) returns (InviteParticipantResponse);
+  // Wraps the case key for a participant who did not have it yet. Any participant who
+  // holds the key may do it, so access survives even if the conciliator is offline.
+  rpc GrantCaseKey(GrantCaseKeyRequest) returns (GrantCaseKeyResponse);
+  // Changes a participant's role. Only conciliators. The last conciliator cannot be demoted.
+  rpc ChangeParticipantRole(ChangeParticipantRoleRequest) returns (ChangeParticipantRoleResponse);
+  // Removes a participant. Only conciliators. Their wrapped key is deleted; content they
+  // already downloaded cannot be recalled (documented limitation of any E2E system).
+  rpc RemoveParticipant(RemoveParticipantRequest) returns (RemoveParticipantResponse);
+}
+
+// Side a party is on.
+enum PartySide {
+  // Not a party (conciliators and assistants).
+  PARTY_SIDE_UNSPECIFIED = 0;
+  // The party that filed the request (convocante).
+  PARTY_SIDE_CLAIMANT = 1;
+  // The party called to the hearing (convocado).
+  PARTY_SIDE_RESPONDENT = 2;
+}
+
+// Whether a party acts in person or through an attorney.
+enum PartyCapacity {
+  // Not a party.
+  PARTY_CAPACITY_UNSPECIFIED = 0;
+  // The party itself.
+  PARTY_CAPACITY_PRINCIPAL = 1;
+  // The party's attorney (apoderado).
+  PARTY_CAPACITY_ATTORNEY = 2;
+}
+
+// Lifecycle of a participant.
+enum ParticipantState {
+  // Never valid.
+  PARTICIPANT_STATE_UNSPECIFIED = 0;
+  // Invited; has no account or has not opened the case yet.
+  PARTICIPANT_STATE_INVITED = 1;
+  // Has an account but is waiting for someone to grant the case key.
+  PARTICIPANT_STATE_AWAITING_KEY = 2;
+  // Fully active.
+  PARTICIPANT_STATE_ACTIVE = 3;
+}
+
+// A person in a case.
+message Participant {
+  // Participant identifier (UUID), unique inside the case.
+  string id = 1;
+  // Account identifier, empty while the invitation is pending.
+  string account_id = 2;
+  // Name shown in the case.
+  string display_name = 3;
+  // Email the invitation was sent to.
+  string email = 4;
+  // Role in the case.
+  CaseRole role = 5;
+  // Side, only for parties.
+  PartySide side = 6;
+  // Capacity, only for parties.
+  PartyCapacity capacity = 7;
+  // Lifecycle state.
+  ParticipantState state = 8;
+  // Fingerprint of the participant's public key, to compare in person during the hearing.
+  string key_fingerprint_sha256 = 9;
+  // When the participant joined.
+  google.protobuf.Timestamp joined_at = 10;
+}
+
+// Request for ListParticipants.
+message ListParticipantsRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of ListParticipants.
+message ListParticipantsResponse {
+  // Every participant of the case.
+  repeated Participant participants = 1;
+}
+
+// Request for InviteParticipant.
+message InviteParticipantRequest {
+  option (buf.validate.message).cel = {
+    id: "invite_participant.party_fields"
+    message: "parties need side and capacity; other roles must not set them"
+    expression: "this.role == 3 ? (this.side != 0 && this.capacity != 0) : (this.side == 0 && this.capacity == 0)"
+  };
+
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Email of the person.
+  string email = 2 [(buf.validate.field).string = {
+    email: true
+    max_len: 254
+  }];
+  // Name to show while the invitation is pending.
+  string display_name = 3 [(buf.validate.field).string = {
+    min_len: 2
+    max_len: 120
+  }];
+  // Role in the case.
+  CaseRole role = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Side, required for parties.
+  PartySide side = 5 [(buf.validate.field).enum.defined_only = true];
+  // Capacity, required for parties.
+  PartyCapacity capacity = 6 [(buf.validate.field).enum.defined_only = true];
+  // Case key wrapped for the invitee, when they already have an account and a public key.
+  actaflow.crypto.v1.WrappedKey wrapped_case_key = 7;
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 8 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of InviteParticipant.
+message InviteParticipantResponse {
+  // The new participant.
+  Participant participant = 1;
+}
+
+// Request for GrantCaseKey.
+message GrantCaseKeyRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Participant receiving the key.
+  string participant_id = 2 [(buf.validate.field).string.uuid = true];
+  // Case key wrapped for that participant's public key.
+  actaflow.crypto.v1.WrappedKey wrapped_case_key = 3 [(buf.validate.field).required = true];
+}
+
+// Response of GrantCaseKey.
+message GrantCaseKeyResponse {
+  // The participant, now ACTIVE.
+  Participant participant = 1;
+}
+
+// Request for ChangeParticipantRole.
+message ChangeParticipantRoleRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Participant to change.
+  string participant_id = 2 [(buf.validate.field).string.uuid = true];
+  // New role.
+  CaseRole role = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// Response of ChangeParticipantRole.
+message ChangeParticipantRoleResponse {
+  // The updated participant.
+  Participant participant = 1;
+}
+
+// Request for RemoveParticipant.
+message RemoveParticipantRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Participant to remove.
+  string participant_id = 2 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of RemoveParticipant.
+message RemoveParticipantResponse {}
