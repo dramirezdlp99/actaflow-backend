@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package actaflow.identity.v1;
+
+import "actaflow/common/v1/pagination.proto";
+import "actaflow/identity/v1/account.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "OrganizationProto";
+option java_package = "com.actaflow.contracts.identity.v1";
+
+// The organization (conciliation center, notary or law firm) and its members.
+// Every RPC except GetOrganization requires PLATFORM_ROLE_ADMIN.
+service OrganizationService {
+  // Returns the caller's organization.
+  rpc GetOrganization(GetOrganizationRequest) returns (GetOrganizationResponse);
+  // Lists the members of the organization.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  // Invites a person by email. The invitation lasts seven days.
+  // Errors: ALREADY_EXISTS (the email already has an account or a pending invitation).
+  rpc InviteMember(InviteMemberRequest) returns (InviteMemberResponse);
+  // Changes a member's platform role. An admin cannot demote themselves.
+  rpc ChangeMemberRole(ChangeMemberRoleRequest) returns (ChangeMemberRoleResponse);
+  // Deactivates a member and revokes all their sessions. Reversible.
+  rpc SetMemberActive(SetMemberActiveRequest) returns (SetMemberActiveResponse);
+}
+
+// An organization.
+message Organization {
+  // Organization identifier (UUID).
+  string id = 1;
+  // Legal name.
+  string name = 2;
+  // Colombian tax identifier (NIT) with its verification digit, for example "900123456-7".
+  string tax_id = 3;
+  // City where it operates.
+  string city = 4;
+}
+
+// A member of the organization.
+message Member {
+  // The member's account.
+  Account account = 1;
+  // Whether the member may sign in.
+  bool active = 2;
+  // Last successful sign-in, if any.
+  google.protobuf.Timestamp last_sign_in_at = 3;
+}
+
+// Request for GetOrganization.
+message GetOrganizationRequest {}
+
+// Response of GetOrganization.
+message GetOrganizationResponse {
+  // The caller's organization.
+  Organization organization = 1;
+}
+
+// Request for ListMembers.
+message ListMembersRequest {
+  // Paging.
+  actaflow.common.v1.PageRequest page = 1 [(buf.validate.field).required = true];
+  // Optional filter by role.
+  PlatformRole role = 2 [(buf.validate.field).enum.defined_only = true];
+}
+
+// Response of ListMembers.
+message ListMembersResponse {
+  // Members of this page.
+  repeated Member members = 1;
+  // Paging.
+  actaflow.common.v1.PageInfo page_info = 2;
+}
+
+// Request for InviteMember.
+message InviteMemberRequest {
+  // Email of the person.
+  string email = 1 [(buf.validate.field).string = {
+    email: true
+    max_len: 254
+  }];
+  // Role the account will have.
+  PlatformRole role = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 3 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of InviteMember.
+message InviteMemberResponse {
+  // Invitation identifier.
+  string invitation_id = 1;
+  // When it expires.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// Request for ChangeMemberRole.
+message ChangeMemberRoleRequest {
+  // Member's account.
+  string account_id = 1 [(buf.validate.field).string.uuid = true];
+  // New role.
+  PlatformRole role = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+// Response of ChangeMemberRole.
+message ChangeMemberRoleResponse {
+  // The updated member.
+  Member member = 1;
+}
+
+// Request for SetMemberActive.
+message SetMemberActiveRequest {
+  // Member's account.
+  string account_id = 1 [(buf.validate.field).string.uuid = true];
+  // True to reactivate, false to deactivate.
+  bool active = 2;
+}
+
+// Response of SetMemberActive.
+message SetMemberActiveResponse {
+  // The updated member.
+  Member member = 1;
+}
