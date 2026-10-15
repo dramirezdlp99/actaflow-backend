@@ -64,6 +64,8 @@ jobs:
     env:
       # Secretos falsos y publicos, solo para esta prueba.
       SECRETO_IDENTITY: secreto-de-ci-publico-no-usar-en-produccion-ide-000
+      PEPPER_IDENTITY: pepper-de-ci-publico-no-usar-en-produccion-ide-0000
+      TOKENS_IDENTITY: tokens-de-ci-publico-no-usar-en-produccion-ide-0000
       SECRETO_LEGAL_CASE: secreto-de-ci-publico-no-usar-en-produccion-exp-000
       SECRETO_MOTOR: secreto-de-ci-publico-no-usar-en-produccion-mot-000
       BASE: >-
@@ -81,7 +83,8 @@ jobs:
       - name: Arrancar con 512 MB cada uno, como en Render Free
         run: |
           docker run -d --name identity --network host --memory=512m $BASE -e PORT=9098 \
-            -e ACTAFLOW_IDENTITY_HMAC_SECRET=$SECRETO_IDENTITY actaflow-identity:ci
+            -e ACTAFLOW_IDENTITY_HMAC_SECRET=$SECRETO_IDENTITY -e ACTAFLOW_IDENTITY_PEPPER=$PEPPER_IDENTITY \
+            -e ACTAFLOW_IDENTITY_TOKEN_SECRET=$TOKENS_IDENTITY actaflow-identity:ci
           # Motor apuntando a un puerto sin servicio: debe aparecer DOWN sin tumbar el servicio.
           docker run -d --name legal-case --network host --memory=512m $BASE -e PORT=9097 \
             -e ACTAFLOW_LEGAL_CASE_HMAC_SECRET=$SECRETO_LEGAL_CASE \
