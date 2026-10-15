@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   verificar:
-    name: Lint, tests y build
+    name: Contratos, lint, tests y build
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -28,17 +28,23 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Contratos identicos a la version publicada
+        run: node scripts/contracts.mjs check --remote
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
-      # verify = checkstyle (lint) + compilacion + tests unitarios e integracion + jar
+      # verify = checkstyle (lint) + codigo generado desde los contratos + tests (gRPC nativo,
+      # gRPC-Web, Tomcat y PostgreSQL reales) + jars de los dos servicios.
       - name: Lint, tests y empaquetado
         run: mvn -B verify
 
-  imagen:
-    name: Build de la imagen y prueba de humo
+  imagenes:
+    name: Imagenes y prueba de humo por gRPC-Web
     runs-on: ubuntu-latest
     needs: verificar
     services:
@@ -56,37 +62,67 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      SECRETO_BFF: secreto-de-ci-publico-no-usar-en-produccion-bff-000
+      # Secretos falsos y publicos, solo para esta prueba.
+      SECRETO_IDENTITY: secreto-de-ci-publico-no-usar-en-produccion-ide-000
+      SECRETO_LEGAL_CASE: secreto-de-ci-publico-no-usar-en-produccion-exp-000
+      SECRETO_MOTOR: secreto-de-ci-publico-no-usar-en-produccion-mot-000
+      BASE: >-
+        -e ACTAFLOW_DB_URL=jdbc:postgresql://localhost:5432/actaflow_test
+        -e ACTAFLOW_DB_USERNAME=actaflow_test -e ACTAFLOW_DB_PASSWORD=actaflow_test
     steps:
       - uses: actions/checkout@v4
-      - name: Construir imagen
-        run: docker build -t actaflow-backend:ci .
-      - name: Arrancar con 512 MB, como en Render Free
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Construir las dos imagenes (contexto en la raiz, como en Render)
         run: |
-          docker run -d --name backend --network host --memory=512m \
-            -e ACTAFLOW_DB_URL=jdbc:postgresql://localhost:5432/actaflow_test \
-            -e ACTAFLOW_DB_USERNAME=actaflow_test -e ACTAFLOW_DB_PASSWORD=actaflow_test \
-            -e ACTAFLOW_BFF_HMAC_SECRET=$SECRETO_BFF \
-            -e ACTAFLOW_ENGINE_HMAC_SECRET=secreto-de-ci-publico-no-usar-en-produccion-mot-000 \
-            -e ACTAFLOW_ENGINE_URL=http://127.0.0.1:9 \
-            actaflow-backend:ci
-      - name: Esperar /actuator/health
+          docker build -f identity-service/Dockerfile -t actaflow-identity:ci .
+          docker build -f legal-case-service/Dockerfile -t actaflow-legal-case:ci .
+      - name: Arrancar con 512 MB cada uno, como en Render Free
         run: |
-          for i in $(seq 1 60); do
-            if curl -fsS http://localhost:9097/actuator/health; then exit 0; fi
-            sleep 2
+          docker run -d --name identity --network host --memory=512m $BASE -e PORT=9098 \
+            -e ACTAFLOW_IDENTITY_HMAC_SECRET=$SECRETO_IDENTITY actaflow-identity:ci
+          # Motor apuntando a un puerto sin servicio: debe aparecer DOWN sin tumbar el servicio.
+          docker run -d --name legal-case --network host --memory=512m $BASE -e PORT=9097 \
+            -e ACTAFLOW_LEGAL_CASE_HMAC_SECRET=$SECRETO_LEGAL_CASE \
+            -e ACTAFLOW_ENGINE_HMAC_SECRET=$SECRETO_MOTOR \
+            -e ACTAFLOW_ENGINE_URL=http://127.0.0.1:9 actaflow-legal-case:ci
+      - name: Esperar /actuator/health de los dos
+        run: |
+          for puerto in 9098 9097; do
+            for i in $(seq 1 60); do
+              if curl -fsS http://localhost:$puerto/actuator/health; then echo; break; fi
+              if [ "$i" = 60 ]; then exit 1; fi
+              sleep 2
+            done
           done
-          exit 1
-      - name: Llamar /api/v1/status firmado como el BFF
+      - name: GetServiceStatus por gRPC-Web, firmado como el BFF
         run: |
-          TS=$(date +%s)
+          RUTA=/actaflow.system.v1.ServiceStatusService/GetServiceStatus
+          # Peticion vacia: se firma el sha256 de cero bytes.
           VACIO=$(printf '' | sha256sum | cut -d' ' -f1)
-          FIRMA=$(printf '%s\nGET\n/api/v1/status\n%s' "$TS" "$VACIO" \
-            | openssl dgst -sha256 -hmac "$SECRETO_BFF" | sed 's/^.*= //')
-          curl -fsS http://localhost:9097/api/v1/status \
-            -H "X-ActaFlow-Timestamp: $TS" -H "X-ActaFlow-Signature: $FIRMA" | tee status.json
-          grep -q '"servicio":"actaflow-backend"' status.json
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9097/api/v1/status)" = "401"
-      - name: Logs del contenedor
+          llamar() {
+            local puerto=$1 secreto=$2 ts firma
+            ts=$(date +%s)
+            firma=$(printf '%s\nRPC\n%s\n%s' "$ts" "$RUTA" "$VACIO" \
+              | openssl dgst -sha256 -hmac "$secreto" | sed 's/^.*= //')
+            npx --yes @bufbuild/buf@1.73.0 curl --protocol grpcweb --schema contracts \
+              -H "x-actaflow-timestamp: $ts" -H "x-actaflow-signature: $firma" \
+              --data '{}' "http://localhost:$puerto$RUTA"
+          }
+          llamar 9098 "$SECRETO_IDENTITY" | tee identity.json
+          grep -q '"serviceName": "identity-service"' identity.json
+          grep -q '"servedVia": "TRANSPORT_GRPC_WEB"' identity.json
+          llamar 9097 "$SECRETO_LEGAL_CASE" | tee legal-case.json
+          grep -q '"serviceName": "legal-case-service"' legal-case.json
+          grep -q '"state": "HEALTH_STATE_DEGRADED"' legal-case.json
+          grep -q 'puede estar despertando' legal-case.json
+          # Con el secreto de otro par, la llamada se rechaza.
+          if llamar 9098 "$SECRETO_LEGAL_CASE" 2> rechazo.txt; then exit 1; fi
+          cat rechazo.txt
+          grep -qi 'unauthenticated' rechazo.txt
+      - name: Logs de los contenedores
         if: always()
-        run: docker logs backend
+        run: |
+          docker logs identity || true
+          docker logs legal-case || true
