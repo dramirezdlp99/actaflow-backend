@@ -97,23 +97,32 @@ psql -U postgres -c "CREATE DATABASE actaflow_test OWNER actaflow_test;"
 `actaflow_test` usa credenciales falsas y públicas (están en los `application-test.yaml`).
 
 **2. Variables de entorno** (una sola vez; después cierra por completo IntelliJ). Genera cada
-secreto con al menos 32 caracteres; los tres deben ser distintos:
+secreto con al menos 32 caracteres; todos deben ser distintos entre si y distintos de los de
+produccion:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("ACTAFLOW_DB_URL", "jdbc:postgresql://localhost:5432/actaflow", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_DB_USERNAME", "actaflow", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_DB_PASSWORD", "<clave-local>", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_IDENTITY_HMAC_SECRET", "<secreto-local-identity-32+>", "User")
+[Environment]::SetEnvironmentVariable("ACTAFLOW_IDENTITY_PEPPER", "<pepper-local-32+>", "User")
+[Environment]::SetEnvironmentVariable("ACTAFLOW_IDENTITY_TOKEN_SECRET", "<tokens-local-32+>", "User")
+[Environment]::SetEnvironmentVariable("ACTAFLOW_BOOTSTRAP_ORGANIZATION", "<nombre-del-centro>", "User")
+[Environment]::SetEnvironmentVariable("ACTAFLOW_BOOTSTRAP_ADMIN_EMAIL", "<tu-correo>", "User")
+[Environment]::SetEnvironmentVariable("ACTAFLOW_BOOTSTRAP_INVITATION_TOKEN", "<invitacion-local-32+>", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_LEGAL_CASE_HMAC_SECRET", "<secreto-local-legal-case-32+>", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_ENGINE_HMAC_SECRET", "<secreto-local-motor-32+>", "User")
 ```
 
-**3. Ejecutar** (una terminal por servicio):
+**3. Ejecutar.** Primero instala una vez los modulos compartidos; despues, una terminal por servicio:
 
 ```powershell
-.\mvnw -pl identity-service -am spring-boot:run
-.\mvnw -pl legal-case-service -am spring-boot:run
+.\mvnw -q install -DskipTests
+.\mvnw -pl identity-service spring-boot:run
+.\mvnw -pl legal-case-service spring-boot:run
 ```
+
+Repite el `install` cuando cambien `platform` o `rpc-contracts`.
 
 **4. Verificar:**
 
@@ -132,12 +141,35 @@ secreto con al menos 32 caracteres; los tres deben ser distintos:
 **identity-service** (nuevo): *New → Web Service* → este mismo repo, runtime Docker, región
 Virginia, plan Free, Dockerfile Path `./identity-service/Dockerfile`, contexto `.`. Variables:
 `ACTAFLOW_DB_URL`, `ACTAFLOW_DB_USERNAME`, `ACTAFLOW_DB_PASSWORD`,
-`ACTAFLOW_IDENTITY_HMAC_SECRET`. Health check: `/actuator/health`.
+`ACTAFLOW_IDENTITY_HMAC_SECRET`, `ACTAFLOW_IDENTITY_PEPPER`, `ACTAFLOW_IDENTITY_TOKEN_SECRET` y,
+solo hasta que te registres como administrador, `ACTAFLOW_BOOTSTRAP_ORGANIZATION`,
+`ACTAFLOW_BOOTSTRAP_ADMIN_EMAIL` y `ACTAFLOW_BOOTSTRAP_INVITATION_TOKEN`. Health check:
+`/actuator/health`. El pepper no se rota nunca: si cambia, nadie puede volver a entrar.
 
 Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 
-## Servicios publicados (bloque BE-1)
+## Servicios publicados
 
 | Servicio gRPC | identity | legal-case |
 |---|---|---|
 | `actaflow.system.v1.ServiceStatusService/GetServiceStatus` | Base de datos | Base de datos + motor de IA (estado anidado) |
+| `actaflow.identity.v1.AuthService` | Registro por invitacion, ingreso en dos pasos (TOTP), refresco y cierre de sesion | — |
+| `actaflow.identity.v1.AccountService` | Cuenta actual, codigos de recuperacion, cambio de contrasena | — |
+| `actaflow.identity.v1.OrganizationService` | Organizacion, miembros, invitaciones, roles | — |
+| `actaflow.identity.v1.KeyDirectoryService` | Claves publicas de los miembros | — |
+| `actaflow.identity.v1.TokenVerificationService` | Clave publica Ed25519 que firma los tokens | — |
+
+## Identidad (bloque BE-2)
+
+- **Conocimiento cero:** la contrasena nunca sale del navegador. El cliente deriva con PBKDF2
+  (600 000 iteraciones minimo) un verificador; el servidor guarda solo `HMAC(pepper, verificador)`.
+  La clave privada de cada persona llega cifrada (por contrasena y por codigo de recuperacion).
+- **Segundo factor obligatorio:** TOTP (RFC 6238, ventana de ±30 s, cada codigo sirve una vez) o
+  uno de los 10 codigos de recuperacion. El secreto TOTP se guarda cifrado con AES-GCM.
+- **Bloqueo:** 5 intentos fallidos bloquean la cuenta 15 minutos. Los errores nunca revelan si
+  el correo existe.
+- **Sesiones:** token de acceso JWT EdDSA de 15 minutos y token de refresco de 30 dias que rota
+  en cada uso; reusar uno ya rotado revoca toda la familia (deteccion de robo).
+- **Sin servicio de correo:** invitar devuelve el token una sola vez y el administrador comparte
+  el enlace. La base guarda solo su hash.
+- **Persistencia:** JDBC directo sobre el esquema `identity` (migracion `V2`).
