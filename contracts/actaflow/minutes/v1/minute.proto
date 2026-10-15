@@ -1,0 +1,261 @@
+syntax = "proto3";
+
+package actaflow.minutes.v1;
+
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "MinuteProto";
+option java_package = "com.actaflow.contracts.minutes.v1";
+
+// Minutes (actas) and their final sealed documents. Implemented by legal-case-service.
+//
+// Step 4 of the case study: "the AI autocompletes the official minute by pouring the extracted
+// data onto the selected legal template". Because the minute is confidential, the template is
+// filled by the document worker as a sealed processor: the browser seals the confirmed
+// entities for it, the worker fills the template in memory and returns the draft encrypted
+// with the same content key. The draft then becomes the starting point of the collaborative
+// document (actaflow.collaboration.v1).
+//
+// Legal note: the final document carries an INTEGRITY SEAL (SHA-256 + CMS signature with
+// ActaFlow's own certificate) plus each party's acceptance confirmed with their TOTP. It is
+// not a certified digital signature under Colombian Ley 527 de 1999, which requires a
+// certificate from an ONAC-accredited certification authority.
+service MinuteService {
+  // Creates a minute in a case from a published template version.
+  rpc CreateMinute(CreateMinuteRequest) returns (CreateMinuteResponse);
+  // Returns one minute.
+  rpc GetMinute(GetMinuteRequest) returns (GetMinuteResponse);
+  // Lists the minutes of a case.
+  rpc ListMinutes(ListMinutesRequest) returns (ListMinutesResponse);
+  // Queues the filling of the template with the confirmed entities (sealed for the document worker).
+  rpc FillMinute(FillMinuteRequest) returns (FillMinuteResponse);
+  // Closes the minute for review: no more edits; queues PDF rendering and sealing.
+  // Only conciliators. Errors: FAILED_PRECONDITION when required variables are missing.
+  rpc CloseMinute(CloseMinuteRequest) returns (CloseMinuteResponse);
+  // Returns the sealed final document (encrypted PDF plus public seal data).
+  rpc GetFinalDocument(GetFinalDocumentRequest) returns (GetFinalDocumentResponse);
+  // Records that a party accepts the final document, confirmed with their current TOTP code.
+  rpc AcceptFinalDocument(AcceptFinalDocumentRequest) returns (AcceptFinalDocumentResponse);
+  // Checks a document against its seal. Public: anyone holding the PDF can compute its
+  // SHA-256 and verify it, without learning anything else about the case.
+  rpc VerifyDocument(VerifyDocumentRequest) returns (VerifyDocumentResponse);
+}
+
+// Lifecycle of a minute.
+enum MinuteState {
+  // Never valid.
+  MINUTE_STATE_UNSPECIFIED = 0;
+  // Being drafted collaboratively.
+  MINUTE_STATE_DRAFT = 1;
+  // Closed; the final document is being rendered and sealed.
+  MINUTE_STATE_SEALING = 2;
+  // Sealed; waiting for the parties' acceptances.
+  MINUTE_STATE_AWAITING_ACCEPTANCE = 3;
+  // Accepted by every party. Final and immutable.
+  MINUTE_STATE_FINAL = 4;
+}
+
+// A minute.
+message Minute {
+  // Minute identifier (UUID). Also identifies its collaborative document.
+  string id = 1;
+  // Case it belongs to.
+  string case_id = 2;
+  // Template used.
+  string template_id = 3;
+  // Template version used (frozen at creation).
+  int32 template_version = 4;
+  // Lifecycle state.
+  MinuteState state = 5;
+  // Pending or finished template-filling job, if any.
+  string fill_job_id = 6;
+  // When it was created.
+  google.protobuf.Timestamp created_at = 7;
+  // When it was closed, if it was.
+  google.protobuf.Timestamp closed_at = 8;
+}
+
+// Request for CreateMinute.
+message CreateMinuteRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Template identifier.
+  string template_id = 2 [(buf.validate.field).string.uuid = true];
+  // Published version to use.
+  int32 template_version = 3 [(buf.validate.field).int32.gte = 1];
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 4 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of CreateMinute.
+message CreateMinuteResponse {
+  // The new minute.
+  Minute minute = 1;
+}
+
+// Request for GetMinute.
+message GetMinuteRequest {
+  // Minute identifier.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of GetMinute.
+message GetMinuteResponse {
+  // The minute.
+  Minute minute = 1;
+}
+
+// Request for ListMinutes.
+message ListMinutesRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of ListMinutes.
+message ListMinutesResponse {
+  // Minutes of the case, newest first.
+  repeated Minute minutes = 1;
+}
+
+// Plaintext sealed inside FillMinuteRequest.input
+// (plaintext_type = "actaflow.minutes.v1.FillInput").
+message FillInput {
+  // The reviewed actaflow.legal.v1.EntityExtractionResult, serialized.
+  bytes reviewed_entities = 1 [(buf.validate.field).bytes.max_len = 1000000];
+  // Case metadata the template may use (case number, city, hearing date), as text.
+  map<string, string> case_fields = 2;
+}
+
+// Request for FillMinute.
+message FillMinuteRequest {
+  // Minute identifier.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+  // FillInput sealed for the document worker.
+  actaflow.crypto.v1.SealedEnvelope input = 2 [(buf.validate.field).required = true];
+}
+
+// Response of FillMinute. The result arrives through actaflow.jobs.v1.JobService.
+message FillMinuteResponse {
+  // Queued job.
+  string job_id = 1;
+}
+
+// Plaintext of the fill result, encrypted with the content key
+// (plaintext_type = "actaflow.minutes.v1.FilledDraft").
+message FilledDraft {
+  // The filled minute as sanitized HTML, ready to seed the collaborative editor.
+  string html = 1;
+  // Variables that could not be filled and must be completed by hand.
+  repeated string missing_variables = 2;
+}
+
+// Request for CloseMinute.
+message CloseMinuteRequest {
+  // Minute identifier.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+  // Final HTML of the collaborative document, sealed for the document worker.
+  actaflow.crypto.v1.SealedEnvelope final_content = 2 [(buf.validate.field).required = true];
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 3 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of CloseMinute.
+message CloseMinuteResponse {
+  // The minute, now SEALING.
+  Minute minute = 1;
+  // Rendering and sealing job.
+  string job_id = 2;
+}
+
+// Public integrity seal of a final document.
+message DocumentSeal {
+  // SHA-256 of the PDF, hex.
+  string sha256_hex = 1;
+  // CMS (PKCS#7) detached signature over the PDF, DER.
+  bytes cms_signature = 2;
+  // Subject of the signing certificate.
+  string signer_subject = 3;
+  // Fingerprint of the signing certificate, hex.
+  string certificate_fingerprint_sha256 = 4;
+  // When it was sealed.
+  google.protobuf.Timestamp sealed_at = 5;
+}
+
+// One party's acceptance.
+message Acceptance {
+  // Participant who accepted.
+  string participant_id = 1;
+  // Name at the time of acceptance.
+  string display_name = 2;
+  // When.
+  google.protobuf.Timestamp accepted_at = 3;
+}
+
+// A sealed final document.
+message FinalDocument {
+  // Document identifier.
+  string id = 1;
+  // Minute it comes from.
+  string minute_id = 2;
+  // The PDF encrypted with the content key.
+  actaflow.crypto.v1.EncryptedBlob pdf = 3;
+  // The content key encrypted with the case key.
+  actaflow.crypto.v1.EncryptedBlob content_key_for_case = 4;
+  // Public seal.
+  DocumentSeal seal = 5;
+  // Acceptances received.
+  repeated Acceptance acceptances = 6;
+  // Parties whose acceptance is still missing.
+  repeated string pending_participant_ids = 7;
+}
+
+// Request for GetFinalDocument.
+message GetFinalDocumentRequest {
+  // Minute identifier.
+  string minute_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of GetFinalDocument.
+message GetFinalDocumentResponse {
+  // The final document.
+  FinalDocument document = 1;
+}
+
+// Request for AcceptFinalDocument. Parties only.
+message AcceptFinalDocumentRequest {
+  // Document identifier.
+  string document_id = 1 [(buf.validate.field).string.uuid = true];
+  // SHA-256 the party computed over the PDF they read, so they accept exactly that file.
+  string sha256_hex = 2 [(buf.validate.field).string.pattern = "^[0-9a-f]{64}$"];
+  // Current TOTP code of the party.
+  string totp_code = 3 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+}
+
+// Response of AcceptFinalDocument.
+message AcceptFinalDocumentResponse {
+  // The document with the new acceptance.
+  FinalDocument document = 1;
+}
+
+// Request for VerifyDocument.
+message VerifyDocumentRequest {
+  // SHA-256 of the PDF to check, hex.
+  string sha256_hex = 1 [(buf.validate.field).string.pattern = "^[0-9a-f]{64}$"];
+}
+
+// Response of VerifyDocument.
+message VerifyDocumentResponse {
+  // Whether a document with that hash was sealed by ActaFlow.
+  bool authentic = 1;
+  // The seal, when authentic.
+  DocumentSeal seal = 2;
+  // Organization that issued it, when authentic.
+  string organization_name = 3;
+  // Case number, when authentic.
+  string case_number = 4;
+  // Number of parties that accepted it.
+  int32 acceptance_count = 5;
+}
