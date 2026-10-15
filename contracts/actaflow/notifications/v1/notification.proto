@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package actaflow.notifications.v1;
+
+import "actaflow/common/v1/pagination.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "NotificationProto";
+option java_package = "com.actaflow.contracts.notifications.v1";
+
+// In-app notifications. Implemented by legal-case-service. They carry metadata only
+// (which case, what happened), never case content.
+service NotificationService {
+  // Lists the caller's notifications, newest first.
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  // Marks notifications as read. Idempotent.
+  rpc MarkNotificationsRead(MarkNotificationsReadRequest) returns (MarkNotificationsReadResponse);
+}
+
+// What a notification is about.
+enum NotificationKind {
+  // Never valid.
+  NOTIFICATION_KIND_UNSPECIFIED = 0;
+  // You were invited to a case.
+  NOTIFICATION_KIND_CASE_INVITATION = 1;
+  // A hearing was scheduled or is about to start.
+  NOTIFICATION_KIND_HEARING_SCHEDULED = 2;
+  // The AI finished extracting entities and they await review.
+  NOTIFICATION_KIND_ENTITIES_READY = 3;
+  // A final document awaits your acceptance.
+  NOTIFICATION_KIND_ACCEPTANCE_REQUESTED = 4;
+  // Every party accepted a final document.
+  NOTIFICATION_KIND_DOCUMENT_FINAL = 5;
+}
+
+// A notification.
+message Notification {
+  // Notification identifier.
+  string id = 1;
+  // Kind.
+  NotificationKind kind = 2;
+  // Case it refers to.
+  string case_id = 3;
+  // Case number, for display.
+  string case_number = 4;
+  // When it was created.
+  google.protobuf.Timestamp created_at = 5;
+  // Whether it was read.
+  bool read = 6;
+}
+
+// Request for ListNotifications.
+message ListNotificationsRequest {
+  // Paging.
+  actaflow.common.v1.PageRequest page = 1 [(buf.validate.field).required = true];
+  // Only unread notifications.
+  bool unread_only = 2;
+}
+
+// Response of ListNotifications.
+message ListNotificationsResponse {
+  // Notifications of this page.
+  repeated Notification notifications = 1;
+  // Unread notifications in total.
+  int32 unread_count = 2;
+  // Paging.
+  actaflow.common.v1.PageInfo page_info = 3;
+}
+
+// Request for MarkNotificationsRead.
+message MarkNotificationsReadRequest {
+  // Notifications to mark.
+  repeated string notification_ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 100
+    unique: true
+    items: {
+      string: {uuid: true}
+    }
+  }];
+}
+
+// Response of MarkNotificationsRead.
+message MarkNotificationsReadResponse {
+  // Unread notifications left.
+  int32 unread_count = 1;
+}
