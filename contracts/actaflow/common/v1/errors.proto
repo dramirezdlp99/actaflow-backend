@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package actaflow.common.v1;
+
+option java_multiple_files = true;
+option java_outer_classname = "ErrorsProto";
+option java_package = "com.actaflow.contracts.common.v1";
+
+// Error model of ActaFlow.
+//
+// Every RPC fails with a standard gRPC status code. When the client needs more than
+// the code, the server attaches one of these messages to the status details
+// (the `grpc-status-details-bin` trailer, a google.rpc.Status).
+//
+// Status codes used by every service:
+//   INVALID_ARGUMENT    the request breaks a contract rule; details carry FieldViolations.
+//   UNAUTHENTICATED     missing or invalid service signature or user session.
+//   NOT_FOUND           the resource does not exist OR the caller may not know it exists
+//                       (cases always answer NOT_FOUND to non-participants, never PERMISSION_DENIED).
+//   PERMISSION_DENIED   the caller can see the resource but not perform this action.
+//   ALREADY_EXISTS      a unique value (email, case number) is taken.
+//   FAILED_PRECONDITION the resource is in a state that forbids the action (a sealed minute).
+//   ABORTED             optimistic concurrency conflict; read again and retry.
+//   RESOURCE_EXHAUSTED  rate limit or quota reached; details carry RetryAfter.
+//   UNAVAILABLE         a dependency is waking up or down; safe to retry with backoff.
+
+// Stable, machine-readable reason for an error, in UPPER_SNAKE_CASE
+// (for example "CASE_NOT_FOUND" or "TOTP_CODE_INVALID"). Clients branch on `reason`,
+// never on the human message.
+message ErrorReason {
+  // Stable error identifier.
+  string reason = 1;
+  // Extra context that is safe to show, such as {"field": "email"}.
+  map<string, string> metadata = 2;
+}
+
+// One broken contract rule.
+message FieldViolation {
+  // Path of the offending field, for example "parties[0].document_number".
+  string field = 1;
+  // Identifier of the broken rule, for example "string.uuid" or "money.sign".
+  string rule = 2;
+  // Human-readable explanation in English.
+  string description = 3;
+}
+
+// All the contract rules a request broke.
+message FieldViolations {
+  // Broken rules, at most one per field and rule.
+  repeated FieldViolation violations = 1;
+}
+
+// How long the client should wait before retrying.
+message RetryAfter {
+  // Seconds to wait.
+  int32 seconds = 1;
+}
