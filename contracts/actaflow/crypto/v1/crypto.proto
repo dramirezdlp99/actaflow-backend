@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package actaflow.crypto.v1;
+
+import "buf/validate/validate.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "CryptoProto";
+option java_package = "com.actaflow.contracts.crypto.v1";
+
+// Client-side encryption envelopes.
+//
+// All confidential content (drafts, attachments, audio, transcripts, extracted
+// entities, final documents) travels and is stored ONLY inside these envelopes.
+// Algorithms are fixed by the contract so every language implements the same thing:
+//
+//   * Symmetric: AES-256-GCM, 12-byte random nonce, 16-byte tag appended to the ciphertext.
+//   * Key agreement: ECDH on NIST P-256 + HKDF-SHA-256.
+//   * Associated data (AAD) is NEVER transmitted: both sides rebuild it from the context
+//     with the format "actaflow/v1|<purpose>|<case_id>|<resource_id>", so a ciphertext
+//     moved to another case or resource fails to decrypt.
+
+// Algorithms a ciphertext or wrapped key may use.
+enum CipherSuite {
+  // Never valid; present only because proto3 enums need a zero value.
+  CIPHER_SUITE_UNSPECIFIED = 0;
+  // AES-256-GCM with a 12-byte nonce.
+  CIPHER_SUITE_AES_256_GCM = 1;
+  // ECDH P-256 ephemeral-static + HKDF-SHA-256 deriving an AES-256-GCM key.
+  CIPHER_SUITE_ECDH_P256_HKDF_SHA256_AES_256_GCM = 2;
+}
+
+// Data encrypted with a symmetric key the server never sees (a case key or a content key).
+message EncryptedBlob {
+  // Algorithm used. Only CIPHER_SUITE_AES_256_GCM is valid here.
+  CipherSuite suite = 1 [(buf.validate.field).enum = {
+    in: [1]
+  }];
+  // Identifier of the key that encrypted the data, for example "case:<uuid>:v1".
+  string key_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 120
+  }];
+  // Random 12-byte nonce, never reused with the same key.
+  bytes nonce = 3 [(buf.validate.field).bytes.len = 12];
+  // Ciphertext followed by the 16-byte GCM tag.
+  bytes ciphertext = 4 [(buf.validate.field).bytes = {
+    min_len: 16
+    max_len: 5000000
+  }];
+  // Fully-qualified protobuf type of the plaintext, for example
+  // "actaflow.legal.v1.TranscriptionResult". Empty when the plaintext is raw bytes
+  // (audio or an attachment file).
+  string plaintext_type = 5 [(buf.validate.field).string.max_len = 200];
+}
+
+// A symmetric key wrapped (encrypted) for one recipient's public key.
+//
+// Used to share a case key with each participant and a content key with a processor.
+message WrappedKey {
+  // Algorithm used. Only CIPHER_SUITE_ECDH_P256_HKDF_SHA256_AES_256_GCM is valid here.
+  CipherSuite suite = 1 [(buf.validate.field).enum = {
+    in: [2]
+  }];
+  // Identifier of the recipient public key (a user key or a processor key).
+  string recipient_key_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 120
+  }];
+  // Sender's ephemeral P-256 public key, uncompressed point (65 bytes).
+  bytes ephemeral_public_key = 3 [(buf.validate.field).bytes.len = 65];
+  // Random 12-byte nonce for the key-wrapping encryption.
+  bytes nonce = 4 [(buf.validate.field).bytes.len = 12];
+  // The wrapped key: a 32-byte key plus the 16-byte GCM tag.
+  bytes wrapped_key = 5 [(buf.validate.field).bytes.len = 48];
+}
+
+// Content sealed for a server-side processor (the AI engine or the document worker).
+//
+// "Sealed processor" pattern: the browser generates a random content key K, encrypts the
+// payload with K, wraps K for the processor's public key and ALSO for the case key, so:
+//   * only that processor can open the request, in memory, for the time it needs;
+//   * the processor encrypts its result with the same K;
+//   * every case participant can unwrap K with the case key and read the result;
+//   * the services in between store and forward ciphertext only.
+message SealedEnvelope {
+  // The payload encrypted with the content key K.
+  EncryptedBlob payload = 1 [(buf.validate.field).required = true];
+  // K wrapped for the processor's public key.
+  WrappedKey processor_key = 2 [(buf.validate.field).required = true];
+  // K encrypted with the case key, so participants can read the processor's result.
+  EncryptedBlob content_key_for_case = 3 [(buf.validate.field).required = true];
+}
+
+// A P-256 public key published in the key directory.
+message PublicKey {
+  // Stable identifier, for example "user:<uuid>:v2" or "processor:engine:v1".
+  string key_id = 1;
+  // Algorithm family. Always "ECDH-P256" in this version.
+  string algorithm = 2;
+  // Uncompressed P-256 point (65 bytes).
+  bytes public_key = 3;
+  // SHA-256 fingerprint of public_key, shown as hex so people can compare it in person.
+  string fingerprint_sha256 = 4;
+}
+
+// Server-side processors that can open sealed envelopes.
+enum ProcessorKind {
+  // Never valid.
+  PROCESSOR_KIND_UNSPECIFIED = 0;
+  // The AI engine: transcription and entity extraction.
+  PROCESSOR_KIND_AI_ENGINE = 1;
+  // The document worker: template filling, PDF rendering and integrity seal.
+  PROCESSOR_KIND_DOCUMENT_WORKER = 2;
+}
+
+// A processor's public key.
+message ProcessorKey {
+  // Which processor owns the key.
+  ProcessorKind kind = 1;
+  // The public key to wrap content keys for.
+  PublicKey key = 2;
+}
+
+// Publishes the public keys of the server-side processors.
+//
+// Implemented by the AI engine (returns its own key) and by legal-case-service
+// (returns the engine key and the document worker key). Browsers fetch them through
+// the BFF before sealing audio or a draft.
+service ProcessorKeyService {
+  // Returns the current public keys of the processors this service knows.
+  rpc GetProcessorKeys(GetProcessorKeysRequest) returns (GetProcessorKeysResponse);
+}
+
+// Request for GetProcessorKeys.
+message GetProcessorKeysRequest {}
+
+// Response of GetProcessorKeys.
+message GetProcessorKeysResponse {
+  // Current processor keys, one per processor.
+  repeated ProcessorKey keys = 1;
+}
