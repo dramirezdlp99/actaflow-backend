@@ -1,0 +1,141 @@
+syntax = "proto3";
+
+package actaflow.identity.v1;
+
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "AccountProto";
+option java_package = "com.actaflow.contracts.identity.v1";
+
+// Platform-wide role. Case roles (conciliator, assistant, party) live in the cases package.
+enum PlatformRole {
+  // Never valid.
+  PLATFORM_ROLE_UNSPECIFIED = 0;
+  // Manages the organization (conciliation center, notary, law firm) and its members.
+  // An ADMIN does NOT see the content of cases they do not participate in.
+  PLATFORM_ROLE_ADMIN = 1;
+  // Staff of the organization: conciliators and legal assistants.
+  PLATFORM_ROLE_MEMBER = 2;
+  // External people, usually the parties of a case and their attorneys.
+  PLATFORM_ROLE_EXTERNAL = 3;
+}
+
+// A user account.
+message Account {
+  // Account identifier (UUID).
+  string id = 1;
+  // Email used to sign in.
+  string email = 2;
+  // Name shown to others.
+  string display_name = 3;
+  // Platform role.
+  PlatformRole role = 4;
+  // Organization the account belongs to.
+  string organization_id = 5;
+  // Current public key identifier.
+  string public_key_id = 6;
+  // When the account was created.
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// The signed-in user's own account.
+service AccountService {
+  // Returns the caller's account.
+  rpc GetCurrentAccount(GetCurrentAccountRequest) returns (GetCurrentAccountResponse);
+  // Replaces the auth verifier and re-encrypts the private key with the new password.
+  // The key pair itself does not change, so case keys stay valid.
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+}
+
+// Request for GetCurrentAccount.
+message GetCurrentAccountRequest {}
+
+// Response of GetCurrentAccount.
+message GetCurrentAccountResponse {
+  // The caller's account.
+  Account account = 1;
+}
+
+// Request for ChangePassword.
+message ChangePasswordRequest {
+  // Verifier derived from the current password.
+  bytes current_auth_verifier = 1 [(buf.validate.field).bytes.len = 32];
+  // Current TOTP code.
+  string totp_code = 2 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+  // New salt (16 bytes).
+  bytes new_salt = 3 [(buf.validate.field).bytes.len = 16];
+  // New iteration count.
+  int32 new_iterations = 4 [(buf.validate.field).int32.gte = 600000];
+  // Verifier derived from the new password.
+  bytes new_auth_verifier = 5 [(buf.validate.field).bytes.len = 32];
+  // Private key re-encrypted with the new password-derived key.
+  actaflow.crypto.v1.EncryptedBlob private_key_by_password = 6 [(buf.validate.field).required = true];
+}
+
+// Response of ChangePassword. Every other session is revoked.
+message ChangePasswordResponse {}
+
+// Public key directory: who can receive a wrapped case key.
+service KeyDirectoryService {
+  // Returns the current public keys of the given accounts.
+  // Only accounts that share a case or the organization with the caller are returned.
+  rpc GetPublicKeys(GetPublicKeysRequest) returns (GetPublicKeysResponse);
+}
+
+// Request for GetPublicKeys.
+message GetPublicKeysRequest {
+  // Accounts to look up.
+  repeated string account_ids = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 50
+    unique: true
+    items: {
+      string: {uuid: true}
+    }
+  }];
+}
+
+// Public key of one account.
+message AccountPublicKey {
+  // Account identifier.
+  string account_id = 1;
+  // Its current public key.
+  actaflow.crypto.v1.PublicKey key = 2;
+}
+
+// Response of GetPublicKeys.
+message GetPublicKeysResponse {
+  // Keys found. Accounts the caller may not see are silently omitted.
+  repeated AccountPublicKey keys = 1;
+}
+
+// Keys other services use to verify access tokens locally, without calling
+// identity-service on every request (so one service being down does not break the others).
+service TokenVerificationService {
+  // Returns the public keys that currently sign access tokens.
+  rpc GetVerificationKeys(GetVerificationKeysRequest) returns (GetVerificationKeysResponse);
+}
+
+// Request for GetVerificationKeys.
+message GetVerificationKeysRequest {}
+
+// One access-token signing key.
+message VerificationKey {
+  // JWT "kid" header value.
+  string key_id = 1;
+  // JWT algorithm. Always "ES256".
+  string algorithm = 2;
+  // Public key in SubjectPublicKeyInfo DER form.
+  bytes public_key_spki = 3;
+  // After this moment tokens signed with this key are no longer accepted.
+  google.protobuf.Timestamp not_after = 4;
+}
+
+// Response of GetVerificationKeys.
+message GetVerificationKeysResponse {
+  // Active keys, newest first.
+  repeated VerificationKey keys = 1;
+}
