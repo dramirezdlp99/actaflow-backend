@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package actaflow.system.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "ServiceStatusProto";
+option java_package = "com.actaflow.contracts.system.v1";
+
+// Health of one service and of the dependencies it needs.
+//
+// The same contract is implemented by every ActaFlow service (identity-service,
+// legal-case-service and the AI engine). The BFF calls identity-service and
+// legal-case-service in parallel to build the /estado page; legal-case-service in
+// turn calls the AI engine, which is never reached from the BFF.
+service ServiceStatusService {
+  // Checks the service and its dependencies right now. It also wakes up a sleeping
+  // free-tier service, so callers should allow up to two minutes on the first call.
+  rpc GetServiceStatus(GetServiceStatusRequest) returns (GetServiceStatusResponse);
+}
+
+// Overall state of a service or component.
+enum HealthState {
+  // Never valid.
+  HEALTH_STATE_UNSPECIFIED = 0;
+  // Responding and ready to work.
+  HEALTH_STATE_OK = 1;
+  // Responding, but something it needs is missing (for example the configured AI model).
+  HEALTH_STATE_DEGRADED = 2;
+  // Not responding or responding with errors.
+  HEALTH_STATE_DOWN = 3;
+}
+
+// What a component is, so clients can pick an icon and a label.
+enum ComponentKind {
+  // Never valid.
+  COMPONENT_KIND_UNSPECIFIED = 0;
+  // A PostgreSQL schema owned by the service.
+  COMPONENT_KIND_DATABASE = 1;
+  // Another ActaFlow service this service calls.
+  COMPONENT_KIND_SERVICE = 2;
+  // A machine learning model loaded by the AI engine.
+  COMPONENT_KIND_MODEL = 3;
+}
+
+// How the call reached the service. Lets /estado show which transport is in use.
+enum Transport {
+  // Unknown.
+  TRANSPORT_UNSPECIFIED = 0;
+  // Native gRPC over HTTP/2 (local development, CI and private networks).
+  TRANSPORT_GRPC = 1;
+  // gRPC-Web over HTTP/1.1 (production on Render Free, which only exposes HTTP/1.1).
+  TRANSPORT_GRPC_WEB = 2;
+}
+
+// Request for GetServiceStatus. Intentionally empty.
+message GetServiceStatusRequest {}
+
+// Response of GetServiceStatus.
+message GetServiceStatusResponse {
+  // Status of the service that answered.
+  ServiceStatus status = 1;
+}
+
+// Status of one service.
+message ServiceStatus {
+  // Service name, for example "legal-case-service".
+  string service_name = 1;
+  // Deployed version of the service.
+  string version = 2;
+  // OK only when every component is OK; otherwise DEGRADED.
+  HealthState state = 3;
+  // When the check ran (server clock, UTC).
+  google.protobuf.Timestamp checked_at = 4;
+  // Transport through which this very call arrived.
+  Transport served_via = 5;
+  // Dependencies checked, in a stable order.
+  repeated ComponentStatus components = 6;
+}
+
+// Status of one dependency.
+message ComponentStatus {
+  // Stable identifier, for example "database" or "ai-engine".
+  string id = 1;
+  // What the component is.
+  ComponentKind kind = 2;
+  // Its state.
+  HealthState state = 3;
+  // How long the check took, in milliseconds.
+  int64 latency_ms = 4;
+  // Short explanation that is safe to show (never a stack trace or a secret).
+  string detail = 5;
+  // Version reported by the component, if any (a schema version, a model name).
+  string version = 6;
+  // When the component is itself an ActaFlow service, its own full status.
+  ServiceStatus nested = 7;
+}
