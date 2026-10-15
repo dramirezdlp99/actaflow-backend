@@ -1,0 +1,235 @@
+syntax = "proto3";
+
+package actaflow.identity.v1;
+
+import "actaflow/crypto/v1/crypto.proto";
+import "actaflow/identity/v1/account.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "AuthProto";
+option java_package = "com.actaflow.contracts.identity.v1";
+
+// Zero-knowledge authentication with mandatory TOTP second factor.
+//
+// The password never leaves the browser. From it the browser derives, with PBKDF2-SHA-256:
+//   * an auth verifier, sent to the server and stored again hashed with Argon2id;
+//   * a separate key-encryption key that unlocks the user's private key kit locally.
+// Because the server only sees the verifier, it cannot decrypt anything.
+//
+// Implemented by identity-service. Called only by the BFF, which keeps the tokens in
+// httpOnly cookies and never hands them to the browser's JavaScript.
+service AuthService {
+  // Returns the key-derivation parameters for an email. For unknown emails it returns
+  // deterministic fake parameters, so the answer never reveals whether an account exists.
+  rpc GetLoginParameters(GetLoginParametersRequest) returns (GetLoginParametersResponse);
+  // Creates an account from an invitation and starts the mandatory TOTP enrollment.
+  // Errors: NOT_FOUND (invalid or expired invitation), ALREADY_EXISTS (email taken).
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  // Confirms TOTP enrollment with a first code. Returns the one-time recovery codes and
+  // the first session. Errors: INVALID_ARGUMENT with reason TOTP_CODE_INVALID.
+  rpc ConfirmTotpEnrollment(ConfirmTotpEnrollmentRequest) returns (ConfirmTotpEnrollmentResponse);
+  // First login step: checks the auth verifier and opens a short second-factor challenge.
+  // Errors: UNAUTHENTICATED (wrong credentials, always the same message),
+  // RESOURCE_EXHAUSTED (too many attempts).
+  rpc Login(LoginRequest) returns (LoginResponse);
+  // Second login step: checks a TOTP code or a recovery code and opens the session.
+  rpc CompleteSecondFactor(CompleteSecondFactorRequest) returns (CompleteSecondFactorResponse);
+  // Rotates the refresh token. Reusing an already rotated token revokes the whole
+  // session family (theft detection). Errors: UNAUTHENTICATED.
+  rpc RefreshSession(RefreshSessionRequest) returns (RefreshSessionResponse);
+  // Revokes the session family of the given refresh token. Idempotent.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  // Replaces the recovery codes. Requires a valid TOTP code.
+  rpc RegenerateRecoveryCodes(RegenerateRecoveryCodesRequest) returns (RegenerateRecoveryCodesResponse);
+}
+
+// Parameters of the password-based key derivation (PBKDF2-SHA-256).
+message KdfParameters {
+  // Random salt, 16 bytes.
+  bytes salt = 1 [(buf.validate.field).bytes.len = 16];
+  // Iteration count. At least 600,000 (OWASP 2023 recommendation).
+  int32 iterations = 2 [(buf.validate.field).int32.gte = 600000];
+}
+
+// The user's private key, encrypted in the browser. The server stores it but cannot open it.
+message PrivateKeyKit {
+  // The user's public key (stored in clear in the key directory).
+  actaflow.crypto.v1.PublicKey public_key = 1 [(buf.validate.field).required = true];
+  // Private key (PKCS#8) encrypted with the password-derived key-encryption key.
+  actaflow.crypto.v1.EncryptedBlob private_key_by_password = 2 [(buf.validate.field).required = true];
+  // The same private key encrypted with the recovery key printed in the recovery kit.
+  actaflow.crypto.v1.EncryptedBlob private_key_by_recovery = 3 [(buf.validate.field).required = true];
+}
+
+// An authenticated session. Only the BFF ever sees the tokens.
+message Session {
+  // Short-lived access token (ES256 JWT, 10 minutes) for the other services.
+  string access_token = 1;
+  // When the access token expires.
+  google.protobuf.Timestamp access_token_expires_at = 2;
+  // Opaque refresh token, single use, rotated on every refresh.
+  string refresh_token = 3;
+  // When the refresh token expires (sliding, 12 hours).
+  google.protobuf.Timestamp refresh_token_expires_at = 4;
+  // The signed-in account.
+  Account account = 5;
+  // The encrypted private key, so the browser can unlock it with the password.
+  PrivateKeyKit key_kit = 6;
+}
+
+// Request for GetLoginParameters.
+message GetLoginParametersRequest {
+  // Email typed by the user.
+  string email = 1 [(buf.validate.field).string = {
+    email: true
+    max_len: 254
+  }];
+}
+
+// Response of GetLoginParameters.
+message GetLoginParametersResponse {
+  // Parameters to derive the auth verifier and the key-encryption key.
+  KdfParameters kdf = 1;
+}
+
+// Request for Register.
+message RegisterRequest {
+  // Invitation token received by email.
+  string invitation_token = 1 [(buf.validate.field).string = {
+    min_len: 32
+    max_len: 128
+  }];
+  // Must match the invited email.
+  string email = 2 [(buf.validate.field).string = {
+    email: true
+    max_len: 254
+  }];
+  // Name shown to other participants.
+  string display_name = 3 [(buf.validate.field).string = {
+    min_len: 2
+    max_len: 120
+  }];
+  // Salt and iterations the browser used.
+  KdfParameters kdf = 4 [(buf.validate.field).required = true];
+  // Auth verifier derived from the password (32 bytes).
+  bytes auth_verifier = 5 [(buf.validate.field).bytes.len = 32];
+  // The new user's key pair, with the private key already encrypted.
+  PrivateKeyKit key_kit = 6 [(buf.validate.field).required = true];
+  // Client-generated UUID; repeating the call with the same key has no extra effect.
+  string idempotency_key = 7 [(buf.validate.field).string.uuid = true];
+}
+
+// Data to configure an authenticator app.
+message TotpEnrollment {
+  // Identifier of this enrollment, to confirm it.
+  string enrollment_id = 1;
+  // Base32 secret, shown once.
+  string secret_base32 = 2;
+  // otpauth:// URI for the QR code.
+  string otpauth_uri = 3;
+}
+
+// Response of Register.
+message RegisterResponse {
+  // Account created, still without a session until TOTP is confirmed.
+  Account account = 1;
+  // Enrollment the user must confirm.
+  TotpEnrollment totp_enrollment = 2;
+}
+
+// Request for ConfirmTotpEnrollment.
+message ConfirmTotpEnrollmentRequest {
+  // Enrollment returned by Register.
+  string enrollment_id = 1 [(buf.validate.field).string.uuid = true];
+  // Current 6-digit code from the authenticator app.
+  string totp_code = 2 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+}
+
+// Response of ConfirmTotpEnrollment.
+message ConfirmTotpEnrollmentResponse {
+  // Ten single-use recovery codes, shown exactly once.
+  repeated string recovery_codes = 1;
+  // The first session.
+  Session session = 2;
+}
+
+// Request for Login.
+message LoginRequest {
+  // Account email.
+  string email = 1 [(buf.validate.field).string = {
+    email: true
+    max_len: 254
+  }];
+  // Auth verifier derived from the password.
+  bytes auth_verifier = 2 [(buf.validate.field).bytes.len = 32];
+}
+
+// Response of Login.
+message LoginResponse {
+  // Challenge to complete with CompleteSecondFactor within five minutes.
+  string challenge_id = 1;
+  // When the challenge expires.
+  google.protobuf.Timestamp challenge_expires_at = 2;
+}
+
+// Request for CompleteSecondFactor.
+message CompleteSecondFactorRequest {
+  // Challenge returned by Login.
+  string challenge_id = 1 [(buf.validate.field).string.uuid = true];
+  // Exactly one second factor.
+  oneof factor {
+    option (buf.validate.oneof).required = true;
+    // Current 6-digit TOTP code.
+    string totp_code = 2 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+    // One unused recovery code (format XXXXX-XXXXX).
+    string recovery_code = 3 [(buf.validate.field).string.pattern = "^[A-Z0-9]{5}-[A-Z0-9]{5}$"];
+  }
+}
+
+// Response of CompleteSecondFactor.
+message CompleteSecondFactorResponse {
+  // The new session.
+  Session session = 1;
+  // How many recovery codes are still unused, to warn when few are left.
+  int32 remaining_recovery_codes = 2;
+}
+
+// Request for RefreshSession.
+message RefreshSessionRequest {
+  // Current refresh token.
+  string refresh_token = 1 [(buf.validate.field).string = {
+    min_len: 32
+    max_len: 256
+  }];
+}
+
+// Response of RefreshSession.
+message RefreshSessionResponse {
+  // The rotated session (new access token AND new refresh token).
+  Session session = 1;
+}
+
+// Request for Logout.
+message LogoutRequest {
+  // Refresh token of the session to close.
+  string refresh_token = 1 [(buf.validate.field).string.max_len = 256];
+}
+
+// Response of Logout.
+message LogoutResponse {}
+
+// Request for RegenerateRecoveryCodes. Requires an access token.
+message RegenerateRecoveryCodesRequest {
+  // Current TOTP code, as proof of possession.
+  string totp_code = 1 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+  // New recovery-key encryption of the private key (the old recovery kit stops working).
+  actaflow.crypto.v1.EncryptedBlob private_key_by_recovery = 2 [(buf.validate.field).required = true];
+}
+
+// Response of RegenerateRecoveryCodes.
+message RegenerateRecoveryCodesResponse {
+  // The new ten recovery codes, shown once.
+  repeated string recovery_codes = 1;
+}
