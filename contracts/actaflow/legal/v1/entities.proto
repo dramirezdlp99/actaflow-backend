@@ -1,0 +1,230 @@
+syntax = "proto3";
+
+package actaflow.legal.v1;
+
+import "actaflow/common/v1/values.proto";
+import "buf/validate/validate.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "EntitiesProto";
+option java_package = "com.actaflow.contracts.legal.v1";
+
+// Legal entities extracted from a hearing transcript.
+//
+// The five families required by the case study are modelled explicitly:
+//   1. identification of the parties      -> PartyIdentification
+//   2. agreed amounts of money            -> MonetaryAmount
+//   3. payment deadlines                  -> PaymentDeadline
+//   4. delivery commitments               -> DeliveryCommitment
+//   5. penalty clauses                    -> PenaltyClause
+//
+// The AI proposes; a person confirms. Every entity carries where it came from and how sure
+// the engine is, so the lawyer can check it against the transcript before it reaches the
+// minute. Like the transcript, these messages only travel encrypted.
+
+// Kind of identity document.
+enum DocumentType {
+  // Unknown.
+  DOCUMENT_TYPE_UNSPECIFIED = 0;
+  // Cedula de ciudadania.
+  DOCUMENT_TYPE_CEDULA_CIUDADANIA = 1;
+  // Cedula de extranjeria.
+  DOCUMENT_TYPE_CEDULA_EXTRANJERIA = 2;
+  // NIT (tax identifier of a company), with verification digit.
+  DOCUMENT_TYPE_NIT = 3;
+  // Passport.
+  DOCUMENT_TYPE_PASSPORT = 4;
+}
+
+// Role a person or company plays in the hearing.
+enum HearingRole {
+  // Unknown.
+  HEARING_ROLE_UNSPECIFIED = 0;
+  // Convocante.
+  HEARING_ROLE_CLAIMANT = 1;
+  // Convocado.
+  HEARING_ROLE_RESPONDENT = 2;
+  // Apoderado (attorney).
+  HEARING_ROLE_ATTORNEY = 3;
+  // Conciliador.
+  HEARING_ROLE_CONCILIATOR = 4;
+  // Witness or any other person mentioned.
+  HEARING_ROLE_OTHER = 5;
+}
+
+// Whether day counts are business days or calendar days.
+enum DayCountConvention {
+  // Not stated in the text; the template default applies and a person must confirm it.
+  DAY_COUNT_CONVENTION_UNSPECIFIED = 0;
+  // Business days ("dias habiles"), skipping weekends and Colombian public holidays.
+  DAY_COUNT_CONVENTION_BUSINESS_DAYS = 1;
+  // Calendar days ("dias calendario").
+  DAY_COUNT_CONVENTION_CALENDAR_DAYS = 2;
+}
+
+// Kind of penalty.
+enum PenaltyKind {
+  // Unknown.
+  PENALTY_KIND_UNSPECIFIED = 0;
+  // A fixed sum (multa).
+  PENALTY_KIND_FIXED_AMOUNT = 1;
+  // A percentage of the owed amount.
+  PENALTY_KIND_PERCENTAGE = 2;
+  // Default interest (intereses de mora).
+  PENALTY_KIND_DEFAULT_INTEREST = 3;
+}
+
+// Review state of an entity.
+enum ReviewState {
+  // Proposed by the engine, not reviewed yet.
+  REVIEW_STATE_UNSPECIFIED = 0;
+  // Confirmed by a person exactly as proposed.
+  REVIEW_STATE_CONFIRMED = 1;
+  // Corrected by a person.
+  REVIEW_STATE_CORRECTED = 2;
+  // Discarded by a person.
+  REVIEW_STATE_REJECTED = 3;
+}
+
+// Where in the transcript an entity was found.
+message SourceReference {
+  // Index of the segment inside HearingTranscript.segments.
+  int32 segment_index = 1 [(buf.validate.field).int32.gte = 0];
+  // Characters of that segment's text.
+  actaflow.common.v1.TextSpan span = 2 [(buf.validate.field).required = true];
+  // The exact original fragment, for display.
+  string fragment = 3 [(buf.validate.field).string.max_len = 2000];
+}
+
+// 1. A party and their identification.
+message PartyIdentification {
+  // Full name of the person or company, normalized ("María Fernanda López").
+  string full_name = 1 [(buf.validate.field).string.max_len = 200];
+  // Organization (company) instead of a natural person.
+  bool is_organization = 2;
+  // Document type.
+  DocumentType document_type = 3;
+  // Document number without separators. For a NIT, the base number without the check digit.
+  string document_number = 4 [(buf.validate.field).string.pattern = "^[0-9A-Z]{0,20}$"];
+  // NIT verification digit as stated in the text, if any.
+  string nit_check_digit = 5 [(buf.validate.field).string.pattern = "^[0-9]?$"];
+  // Whether the stated NIT check digit matches the DIAN modulus-11 algorithm.
+  bool nit_check_digit_valid = 6;
+  // Role in the hearing.
+  HearingRole role = 7;
+  // Case participant this person was matched to, if any.
+  string participant_id = 8;
+}
+
+// 2. An amount of money agreed or mentioned.
+message MonetaryAmount {
+  // Normalized amount ("un millón quinientos mil pesos" -> COP 1500000).
+  actaflow.common.v1.Money amount = 1;
+  // How the amount was written, for example "un millón quinientos mil pesos".
+  string written_form = 2 [(buf.validate.field).string.max_len = 500];
+  // Number of installments, 0 when paid in a single payment.
+  int32 installments = 3 [(buf.validate.field).int32.gte = 0];
+  // Amount of each installment, when installments > 0.
+  actaflow.common.v1.Money installment_amount = 4;
+  // Party who pays (index into EntityExtractionResult.parties), -1 when unknown.
+  int32 debtor_party_index = 5 [(buf.validate.field).int32.gte = -1];
+  // Party who receives, -1 when unknown.
+  int32 creditor_party_index = 6 [(buf.validate.field).int32.gte = -1];
+}
+
+// 3. A payment deadline.
+message PaymentDeadline {
+  // The resolved due date.
+  actaflow.common.v1.CalendarDate due_date = 1;
+  // How the deadline was expressed, for example "dentro de los treinta días siguientes".
+  string expression = 2 [(buf.validate.field).string.max_len = 500];
+  // Whether the text gave an exact date (false for relative expressions).
+  bool absolute = 3;
+  // For relative deadlines, the number of days counted.
+  int32 days = 4 [(buf.validate.field).int32.gte = 0];
+  // Business or calendar days.
+  DayCountConvention convention = 5;
+  // Amount this deadline applies to (index into amounts), -1 when unknown.
+  int32 amount_index = 6 [(buf.validate.field).int32.gte = -1];
+  // For installment plans, which installment (1-based), 0 when not applicable.
+  int32 installment_number = 7 [(buf.validate.field).int32.gte = 0];
+}
+
+// 4. A commitment to deliver something.
+message DeliveryCommitment {
+  // Party who must deliver (index into parties), -1 when unknown.
+  int32 obligor_party_index = 1 [(buf.validate.field).int32.gte = -1];
+  // What must be delivered, for example "las llaves del local".
+  string object = 2 [(buf.validate.field).string.max_len = 500];
+  // Due date, if stated.
+  actaflow.common.v1.CalendarDate due_date = 3;
+  // How the deadline was expressed.
+  string deadline_expression = 4 [(buf.validate.field).string.max_len = 500];
+}
+
+// 5. A penalty clause.
+message PenaltyClause {
+  // Kind of penalty.
+  PenaltyKind kind = 1;
+  // Fixed amount, for PENALTY_KIND_FIXED_AMOUNT.
+  actaflow.common.v1.Money fixed_amount = 2;
+  // Percentage in basis points (1000 = 10 %), for percentage and default interest.
+  int32 basis_points = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 100000
+  }];
+  // What triggers it, for example "incumplimiento de cualquiera de las cuotas".
+  string trigger = 4 [(buf.validate.field).string.max_len = 500];
+  // Party who would pay it, -1 when unknown.
+  int32 obligor_party_index = 5 [(buf.validate.field).int32.gte = -1];
+}
+
+// One extracted entity with its provenance.
+message LegalEntity {
+  // Stable identifier inside the result (UUID), used to confirm or correct it.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+  // The entity itself.
+  oneof value {
+    option (buf.validate.oneof).required = true;
+    // A party.
+    PartyIdentification party = 2;
+    // An amount.
+    MonetaryAmount amount = 3;
+    // A payment deadline.
+    PaymentDeadline deadline = 4;
+    // A delivery commitment.
+    DeliveryCommitment commitment = 5;
+    // A penalty clause.
+    PenaltyClause penalty = 6;
+  }
+  // Where it was found.
+  SourceReference source = 7;
+  // Engine confidence from 0 to 1.
+  float confidence = 8 [(buf.validate.field).float = {
+    gte: 0
+    lte: 1
+  }];
+  // True when the engine had to assume something (for example business vs calendar days)
+  // and a person must look at it before it reaches the minute.
+  bool requires_confirmation = 9;
+  // Review state.
+  ReviewState review = 10;
+}
+
+// Every entity extracted from a hearing.
+message EntityExtractionResult {
+  // Parties, referenced by index from the other entities.
+  repeated LegalEntity parties = 1 [(buf.validate.field).repeated.max_items = 50];
+  // Amounts.
+  repeated LegalEntity amounts = 2 [(buf.validate.field).repeated.max_items = 200];
+  // Payment deadlines.
+  repeated LegalEntity deadlines = 3 [(buf.validate.field).repeated.max_items = 200];
+  // Delivery commitments.
+  repeated LegalEntity commitments = 4 [(buf.validate.field).repeated.max_items = 200];
+  // Penalty clauses.
+  repeated LegalEntity penalties = 5 [(buf.validate.field).repeated.max_items = 50];
+  // Date of the hearing used to resolve relative deadlines.
+  actaflow.common.v1.CalendarDate reference_date = 6;
+  // Extraction pipeline version, for example "actaflow-ner-1.0+es_core_news_sm-3.8".
+  string pipeline_version = 7;
+}
