@@ -1,59 +1,91 @@
-# ActaFlow · Backend
+# ActaFlow · Backend (microservicios Java)
 
-API, gateway, workers y datos de ActaFlow, la plataforma de generación y maquetación de minutas
-para audiencias de conciliación y mediaciones legales.
+Microservicios Java de ActaFlow, la plataforma de generación y maquetación de minutas para
+audiencias de conciliación y mediaciones legales. **No hay API REST:** cada servicio publica
+servicios gRPC definidos primero en [`actaflow-contracts`](https://github.com/dramirezdlp99/actaflow-contracts)
+(Contract-First, `.proto` como fuente única de verdad).
 
-| | |
-|---|---|
-| Lenguaje | Java 21 |
-| Framework | Spring Boot 4.1 (starters modulares), Jackson 3 |
-| Datos | PostgreSQL 17 (Neon en producción) + Flyway |
-| Puerto local | **9097** |
-| Despliegue | Render (Web Service Docker, plan Free) |
+| | identity-service | legal-case-service |
+|---|---|---|
+| Responsabilidad | Cuentas, sesiones, organizaciones, llaves públicas | Casos, participantes, audiencias, plantillas, actas, trabajos |
+| Puerto web (gRPC-Web + `/actuator/health`) | **9098** | **9097** |
+| Puerto gRPC nativo (HTTP/2) | **9198** | **9197** |
+| Esquema PostgreSQL | `identity` | `legal_case` |
+| Llama a | — | motor de IA (Python) |
 
-## Arquitectura
+Java 21 · Spring Boot 4.1 · grpc-java 1.84.3 · protobuf 3.25.8 · PostgreSQL 17 (Neon) + Flyway.
+El puerto 8080 no se usa nunca (lo ocupa Jenkins).
 
-Hexagonal por módulo, bajo `com.actaflow.backend`:
+## Módulos Maven
 
 ```
-compartido/              transversal
-  config/                ActaFlowProperties (todo por variables de entorno)
-  seguridad/             FirmaHmac (dominio puro), FirmasServicios (BFF y motor)
-  web/                   ApiError, FiltroFirmaBff, FiltroCabecerasSeguridad, ManejadorGlobalErrores
-estado/                  primer módulo: GET /api/v1/status
-  domain/                EstadoSistema, VerificacionComponente
-  application/           ConsultarEstadoService + puertos VerificadorBaseDatos / VerificadorMotorIa
-  infrastructure/        JdbcVerificadorBaseDatos, MotorIaHttpCliente, EstadoConfig
-  web/                   EstadoController, RespuestaEstado
+pom.xml                  padre: versiones fijadas de gRPC y protobuf
+contracts/               copia FIJADA de actaflow-contracts (ver contracts.lock.json)
+rpc-contracts/           codigo Java GENERADO desde contracts/ (mensajes + stubs gRPC)
+platform/                infraestructura comun, Java puro, sin Spring:
+  seguridad/             FirmaHmac (mismo mensaje canonico que el BFF y el motor)
+  grpc/                  ServidorGrpc (en memoria + nativo), interceptores de firma, ClienteGrpc
+  grpcweb/               PasarelaGrpcWeb (servidor), CanalGrpcWeb (cliente), tramas
+  estado/                VerificadorEstado, ServicioEstado, comprobaciones de BD y de servicios
+  web/                   FiltroCabecerasSeguridad
+identity-service/        microservicio de identidad
+legal-case-service/      microservicio de expedientes (migrado del backend monolitico v0.1)
 ```
 
-La capa de aplicación no conoce Spring: se cablea en `infrastructure/*Config`. Los *fakes* de
-prueba viven solo en `src/test`.
+## Contratos: Contract-First y tipado de punta a punta
 
-### Seguridad entre servicios
+1. El contrato se diseña y versiona en `actaflow-contracts` (en inglés).
+2. Aquí se fija una versión exacta: `contracts/` + `contracts.lock.json` (sha256 de cada archivo).
+3. `rpc-contracts` genera las clases con `protoc` + `protoc-gen-grpc-java` en cada build: nadie
+   escribe a mano un DTO ni un cliente.
+4. CI comprueba que la copia es idéntica a la versión publicada (`check --remote`).
 
-- **BFF → backend:** toda ruta `/api/**` exige firma HMAC-SHA256 del BFF; sin firma, 401 con
-  `ApiError`. El motivo del rechazo solo va al log.
-- **Backend → motor de IA:** cada petición sale firmada con otro secreto, por HTTP/1.1 forzado.
-- Mensaje canónico (idéntico en los tres repos):
-  `timestamp \n MÉTODO \n ruta[?consulta] \n sha256_hex(cuerpo)`.
-- Errores uniformes: `{"estado", "codigo", "mensaje", "ruta", "instante"}`.
+Actualizar a otra versión del contrato:
 
-### Decisiones por el plan gratuito
+```powershell
+node scripts/contracts.mjs sync v0.2.0     # descarga, copia y reescribe el lock
+node scripts/contracts.mjs check           # verifica los sha256
+.\mvnw verify
+```
 
-- `/actuator/health` **no** consulta la base de datos: Render lo llama a menudo y mantendría
-  Neon despierto gastando horas-CU. El estado de la base va en `/api/v1/status`.
-- Pool Hikari con `minimum-idle: 0`: las conexiones ociosas se cierran y Neon puede suspenderse.
-- `/api/v1/status` verifica base y motor **en paralelo** con tiempos máximos: un motor dormido
-  aparece como `CAIDO (puede estar despertando)` sin bloquear la respuesta, y la propia
-  petición lo despierta.
+## Transporte: gRPC nativo y gRPC-Web
+
+Cada servicio corre **un solo** servidor gRPC con dos entradas:
+
+- **gRPC nativo sobre HTTP/2** (puertos 919x): local y CI.
+- **gRPC-Web sobre HTTP/1.1** en el puerto web: producción. Render Free no expone HTTP/2
+  público, así que una pasarela (filtro de Servlet) traduce gRPC-Web a una llamada en memoria al
+  mismo servidor, con los mismos interceptores. Ver ADR 0003 en `actaflow-contracts`.
+
+`ServiceStatus.served_via` informa por qué transporte llegó cada llamada. Lo pone el
+servidor, el cliente no lo puede falsificar.
+
+`legal-case-service` llama al motor de IA con `ClienteGrpc`: `ACTAFLOW_ENGINE_TRANSPORT=grpc`
+(local, al puerto 8102 del motor) o `grpc-web` (Render, a su URL pública; lo fija el Dockerfile).
+
+## Seguridad entre servicios
+
+- Cada llamada lleva la firma HMAC-SHA256 en los metadatos `x-actaflow-timestamp` y
+  `x-actaflow-signature`. Mensaje canónico, idéntico en Java, Python y TypeScript:
+  `{timestamp}\nRPC\n/{paquete.Servicio}/{Metodo}\n{sha256 hex de los bytes protobuf de la peticion}`.
+- **Un secreto por par:** BFF→identity (`ACTAFLOW_IDENTITY_HMAC_SECRET`), BFF→legal-case
+  (`ACTAFLOW_LEGAL_CASE_HMAC_SECRET`), legal-case→motor (`ACTAFLOW_ENGINE_HMAC_SECRET`). Mismos
+  nombres en el frontend y en el motor. Distintos en local y en producción.
+- Sin firma válida: `UNAUTHENTICATED` y el servicio no se ejecuta. El motivo solo va al log.
+- Cabeceras de seguridad (`nosniff`, `DENY`, CSP, HSTS, `no-store`) en todas las respuestas.
+
+## Decisiones por el plan gratuito
+
+- `/actuator/health` no consulta la base: Render lo llama a menudo y mantendría Neon despierto.
+  El estado real va en `GetServiceStatus`.
+- Hikari con `minimum-idle: 0`: Neon puede suspenderse.
+- `GetServiceStatus` comprueba base y motor **en paralelo** (hilos virtuales) con tiempos
+  máximos. Un motor dormido aparece `DOWN (puede estar despertando)` sin bloquear la respuesta.
+- Una sola base de Neon para los dos servicios, con un esquema por servicio.
 
 ## Desarrollo local (PowerShell)
 
-**1. Maven Wrapper.** Copia `mvnw`, `mvnw.cmd` y `.mvn\wrapper\maven-wrapper.properties` desde
-tu repo de PanelVault (son genéricos y ya funcionan en tu máquina).
-
-**2. Bases de datos locales** (una sola vez, con `psql` de tu PostgreSQL local):
+**1. Bases de datos** (una sola vez, con el `psql` de tu PostgreSQL local):
 
 ```powershell
 psql -U postgres -c "CREATE USER actaflow PASSWORD '<clave-local>';"
@@ -62,42 +94,50 @@ psql -U postgres -c "CREATE USER actaflow_test PASSWORD 'actaflow_test';"
 psql -U postgres -c "CREATE DATABASE actaflow_test OWNER actaflow_test;"
 ```
 
-`actaflow_test` usa credenciales falsas y públicas (están en `application-test.yaml`).
+`actaflow_test` usa credenciales falsas y públicas (están en los `application-test.yaml`).
 
-**3. Variables de entorno** (una sola vez; después cierra por completo IntelliJ):
+**2. Variables de entorno** (una sola vez; después cierra por completo IntelliJ). Genera cada
+secreto con al menos 32 caracteres; los tres deben ser distintos:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("ACTAFLOW_DB_URL", "jdbc:postgresql://localhost:5432/actaflow", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_DB_USERNAME", "actaflow", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_DB_PASSWORD", "<clave-local>", "User")
-[Environment]::SetEnvironmentVariable("ACTAFLOW_BFF_HMAC_SECRET", "<secreto-local-bff-32+>", "User")
-[Environment]::SetEnvironmentVariable("ACTAFLOW_ENGINE_URL", "http://localhost:8002", "User")
+[Environment]::SetEnvironmentVariable("ACTAFLOW_IDENTITY_HMAC_SECRET", "<secreto-local-identity-32+>", "User")
+[Environment]::SetEnvironmentVariable("ACTAFLOW_LEGAL_CASE_HMAC_SECRET", "<secreto-local-legal-case-32+>", "User")
 [Environment]::SetEnvironmentVariable("ACTAFLOW_ENGINE_HMAC_SECRET", "<secreto-local-motor-32+>", "User")
 ```
 
-El secreto del motor debe ser el mismo `ACTAFLOW_ENGINE_HMAC_SECRET` que usa el motor, y el
-del BFF el mismo `ACTAFLOW_BFF_HMAC_SECRET` del frontend.
-
-**4. Ejecutar y verificar:**
+**3. Ejecutar** (una terminal por servicio):
 
 ```powershell
-.\mvnw spring-boot:run
-.\mvnw test        # checkstyle (lint) + tests unitarios + integración con PostgreSQL real
+.\mvnw -pl identity-service -am spring-boot:run
+.\mvnw -pl legal-case-service -am spring-boot:run
+```
+
+**4. Verificar:**
+
+```powershell
+.\mvnw verify      # checkstyle + codigo generado + tests con PostgreSQL real
 ```
 
 ## Runbook de despliegue (Render)
 
-1. Render → **New → Web Service** → `dramirezdlp99/actaflow-backend`, runtime **Docker**,
-   región **Virginia (US East)**, plan **Free**.
-2. Health check path: `/actuator/health`.
-3. Variables de entorno: `ACTAFLOW_DB_URL` (JDBC de Neon, conexión **directa**, con
-   `?sslmode=require`), `ACTAFLOW_DB_USERNAME`, `ACTAFLOW_DB_PASSWORD`,
-   `ACTAFLOW_BFF_HMAC_SECRET`, `ACTAFLOW_ENGINE_URL`, `ACTAFLOW_ENGINE_HMAC_SECRET`.
-4. Auto-Deploy: **After CI Checks Pass**, rama `main`.
+**legal-case-service** (es el servicio existente `actaflow-backend`): en *Settings* cambia
+**Dockerfile Path** a `./legal-case-service/Dockerfile` y **Docker Build Context Directory** a `.`
+**antes** de hacer push. Variables: `ACTAFLOW_DB_URL`, `ACTAFLOW_DB_USERNAME`,
+`ACTAFLOW_DB_PASSWORD`, `ACTAFLOW_LEGAL_CASE_HMAC_SECRET`, `ACTAFLOW_ENGINE_URL`,
+`ACTAFLOW_ENGINE_HMAC_SECRET`. Health check: `/actuator/health`.
 
-## Endpoints (bloque 0)
+**identity-service** (nuevo): *New → Web Service* → este mismo repo, runtime Docker, región
+Virginia, plan Free, Dockerfile Path `./identity-service/Dockerfile`, contexto `.`. Variables:
+`ACTAFLOW_DB_URL`, `ACTAFLOW_DB_USERNAME`, `ACTAFLOW_DB_PASSWORD`,
+`ACTAFLOW_IDENTITY_HMAC_SECRET`. Health check: `/actuator/health`.
 
-| Método y ruta | Firma BFF | Respuesta |
+Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
+
+## Servicios publicados (bloque BE-1)
+
+| Servicio gRPC | identity | legal-case |
 |---|---|---|
-| `GET /actuator/health` | No | `{"status":"UP"}` sin detalles |
-| `GET /api/v1/status` | Sí | Estado general (`OK`/`DEGRADADO`) y por capa: base de datos y motor de IA, con latencia y versión |
+| `actaflow.system.v1.ServiceStatusService/GetServiceStatus` | Base de datos | Base de datos + motor de IA (estado anidado) |
