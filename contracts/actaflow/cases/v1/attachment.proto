@@ -1,0 +1,159 @@
+syntax = "proto3";
+
+package actaflow.cases.v1;
+
+import "actaflow/crypto/v1/crypto.proto";
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "AttachmentProto";
+option java_package = "com.actaflow.contracts.cases.v1";
+
+// Encrypted attachments of a case (identity documents, contracts, evidence).
+//
+// Files are encrypted in a browser Web Worker before upload. The BFF runs on Vercel, whose
+// functions accept at most 4.5 MB per request, so files travel in chunks of up to 3 MB.
+service AttachmentService {
+  // Registers a new attachment and returns where to send its chunks.
+  // Errors: RESOURCE_EXHAUSTED (case storage quota of the free plan reached).
+  rpc BeginAttachmentUpload(BeginAttachmentUploadRequest) returns (BeginAttachmentUploadResponse);
+  // Uploads one encrypted chunk. Re-sending the same chunk index is idempotent.
+  rpc UploadAttachmentChunk(UploadAttachmentChunkRequest) returns (UploadAttachmentChunkResponse);
+  // Marks the upload complete after checking that every chunk arrived.
+  rpc CompleteAttachmentUpload(CompleteAttachmentUploadRequest) returns (CompleteAttachmentUploadResponse);
+  // Lists the attachments of a case.
+  rpc ListAttachments(ListAttachmentsRequest) returns (ListAttachmentsResponse);
+  // Downloads one encrypted chunk.
+  rpc GetAttachmentChunk(GetAttachmentChunkRequest) returns (GetAttachmentChunkResponse);
+  // Deletes an attachment. Only its uploader or a conciliator.
+  rpc DeleteAttachment(DeleteAttachmentRequest) returns (DeleteAttachmentResponse);
+}
+
+// An attachment. File name and media type are inside the encrypted metadata.
+message Attachment {
+  // Attachment identifier (UUID).
+  string id = 1;
+  // Case it belongs to.
+  string case_id = 2;
+  // Encrypted AttachmentMetadata.
+  actaflow.crypto.v1.EncryptedBlob metadata = 3;
+  // Total ciphertext size in bytes.
+  int64 size_bytes = 4;
+  // Number of chunks.
+  int32 chunk_count = 5;
+  // Whether every chunk arrived.
+  bool complete = 6;
+  // Participant who uploaded it.
+  string uploaded_by_participant_id = 7;
+  // Upload time.
+  google.protobuf.Timestamp created_at = 8;
+}
+
+// Plaintext of Attachment.metadata.
+message AttachmentMetadata {
+  // Original file name.
+  string file_name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  // Media type, for example "application/pdf".
+  string media_type = 2 [(buf.validate.field).string.max_len = 120];
+  // SHA-256 of the plaintext file, checked after decrypting.
+  bytes sha256 = 3 [(buf.validate.field).bytes.len = 32];
+}
+
+// Request for BeginAttachmentUpload.
+message BeginAttachmentUploadRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Encrypted AttachmentMetadata.
+  actaflow.crypto.v1.EncryptedBlob metadata = 2 [(buf.validate.field).required = true];
+  // Total ciphertext size, at most 20 MB.
+  int64 size_bytes = 3 [(buf.validate.field).int64 = {
+    gt: 0
+    lte: 20971520
+  }];
+  // Number of chunks the client will send.
+  int32 chunk_count = 4 [(buf.validate.field).int32 = {
+    gte: 1
+    lte: 10
+  }];
+  // Client-generated UUID for idempotency.
+  string idempotency_key = 5 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of BeginAttachmentUpload.
+message BeginAttachmentUploadResponse {
+  // The registered attachment, still incomplete.
+  Attachment attachment = 1;
+}
+
+// Request for UploadAttachmentChunk.
+message UploadAttachmentChunkRequest {
+  // Attachment identifier.
+  string attachment_id = 1 [(buf.validate.field).string.uuid = true];
+  // Zero-based chunk index.
+  int32 chunk_index = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lt: 10
+  }];
+  // Encrypted chunk (each chunk is its own AES-GCM blob).
+  actaflow.crypto.v1.EncryptedBlob chunk = 3 [(buf.validate.field).required = true];
+}
+
+// Response of UploadAttachmentChunk.
+message UploadAttachmentChunkResponse {
+  // Chunks received so far.
+  int32 received_chunks = 1;
+}
+
+// Request for CompleteAttachmentUpload.
+message CompleteAttachmentUploadRequest {
+  // Attachment identifier.
+  string attachment_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of CompleteAttachmentUpload.
+message CompleteAttachmentUploadResponse {
+  // The completed attachment.
+  Attachment attachment = 1;
+}
+
+// Request for ListAttachments.
+message ListAttachmentsRequest {
+  // Case identifier.
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of ListAttachments.
+message ListAttachmentsResponse {
+  // Complete attachments of the case, newest first.
+  repeated Attachment attachments = 1;
+}
+
+// Request for GetAttachmentChunk.
+message GetAttachmentChunkRequest {
+  // Attachment identifier.
+  string attachment_id = 1 [(buf.validate.field).string.uuid = true];
+  // Zero-based chunk index.
+  int32 chunk_index = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lt: 10
+  }];
+}
+
+// Response of GetAttachmentChunk.
+message GetAttachmentChunkResponse {
+  // The encrypted chunk.
+  actaflow.crypto.v1.EncryptedBlob chunk = 1;
+}
+
+// Request for DeleteAttachment.
+message DeleteAttachmentRequest {
+  // Attachment identifier.
+  string attachment_id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response of DeleteAttachment.
+message DeleteAttachmentResponse {}
