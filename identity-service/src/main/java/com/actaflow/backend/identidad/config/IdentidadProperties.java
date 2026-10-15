@@ -9,12 +9,23 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * (ver application.yaml); los secretos nunca tienen valor por defecto.
  */
 @ConfigurationProperties(prefix = "actaflow")
-public record IdentidadProperties(String version, Hmac hmac, Grpc grpc, Bff bff, Estado estado) {
+public record IdentidadProperties(String version, Hmac hmac, Grpc grpc, Bff bff, Estado estado, Seguridad seguridad,
+                                  Arranque arranque) {
 
     private static final int LONGITUD_MINIMA_SECRETO = 32;
 
     public IdentidadProperties {
-        exigir(hmac != null && grpc != null && bff != null && estado != null, "Falta configuracion de actaflow.*");
+        exigir(hmac != null && grpc != null && bff != null && estado != null && seguridad != null && arranque != null,
+                "Falta configuracion de actaflow.*");
+        exigirSecreto(seguridad.pepper(), "ACTAFLOW_IDENTITY_PEPPER");
+        exigirSecreto(seguridad.tokenSecret(), "ACTAFLOW_IDENTITY_TOKEN_SECRET");
+        exigir(!seguridad.pepper().equals(seguridad.tokenSecret()) && !seguridad.pepper().equals(bff.hmacSecret())
+                && !seguridad.tokenSecret().equals(bff.hmacSecret()),
+                "ACTAFLOW_IDENTITY_HMAC_SECRET, ACTAFLOW_IDENTITY_PEPPER y ACTAFLOW_IDENTITY_TOKEN_SECRET"
+                        + " deben ser distintos");
+        exigir(seguridad.accessTokenTtl() != null && !seguridad.accessTokenTtl().isNegative()
+                && seguridad.accessTokenTtl().toMinutes() <= 60,
+                "actaflow.seguridad.access-token-ttl debe ser de 1 a 60 min");
         exigir(bff.hmacSecret() != null && bff.hmacSecret().length() >= LONGITUD_MINIMA_SECRETO,
                 "ACTAFLOW_IDENTITY_HMAC_SECRET debe tener al menos " + LONGITUD_MINIMA_SECRETO + " caracteres");
         exigir(hmac.toleranceSeconds() >= 30 && hmac.toleranceSeconds() <= 900,
@@ -42,8 +53,30 @@ public record IdentidadProperties(String version, Hmac hmac, Grpc grpc, Bff bff,
     public record Bff(String hmacSecret) {
     }
 
+    /**
+     * Secretos de la identidad. Nunca tienen valor por defecto y son distintos en local y produccion.
+     *
+     * @param pepper          ACTAFLOW_IDENTITY_PEPPER: entra en todos los hashes (verificadores, tokens)
+     * @param tokenSecret     ACTAFLOW_IDENTITY_TOKEN_SECRET: semilla de la clave Ed25519 de los tokens
+     * @param accessTokenTtl  vigencia del token de acceso
+     */
+    public record Seguridad(String pepper, String tokenSecret, Duration accessTokenTtl) {
+    }
+
+    /**
+     * Primer arranque (opcional): organizacion e invitacion del primer administrador. Se usa una
+     * sola vez; despues el administrador invita a los demas desde la aplicacion.
+     */
+    public record Arranque(String organizationName, String adminEmail, String invitationToken) {
+    }
+
     /** Tiempo maximo de la comprobacion de la base de datos en GetServiceStatus. */
     public record Estado(Duration timeoutBaseDatos) {
+    }
+
+    private static void exigirSecreto(String secreto, String variable) {
+        exigir(secreto != null && secreto.length() >= LONGITUD_MINIMA_SECRETO,
+                variable + " debe tener al menos " + LONGITUD_MINIMA_SECRETO + " caracteres");
     }
 
     private static void exigir(boolean condicion, String mensaje) {
