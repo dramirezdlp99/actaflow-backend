@@ -52,7 +52,8 @@ public final class ServidorGrpc implements AutoCloseable {
     private ManagedChannel canalEnMemoria;
 
     /**
-     * @param servicios        implementaciones generadas desde el contrato
+     * @param servicios        implementaciones generadas desde el contrato; los envueltos en
+     *                         {@link ServicioPublico} no exigen la firma HMAC
      * @param firma            verificador de la firma HMAC de las llamadas entrantes
      * @param puertoNativo     puerto del servidor nativo; negativo lo desactiva, 0 elige uno libre
      * @param maxMensajeBytes  tamano maximo de un mensaje
@@ -63,7 +64,7 @@ public final class ServidorGrpc implements AutoCloseable {
         for (BindableService servicio : servicios) {
             ServerServiceDefinition bytes =
                     ServerInterceptors.useMarshalledMessages(servicio.bindService(), MarshallerBytes.INSTANCIA);
-            lista.add(ServerInterceptors.intercept(bytes, interceptor));
+            lista.add(servicio instanceof ServicioPublico ? bytes : ServerInterceptors.intercept(bytes, interceptor));
             for (ServerMethodDefinition<?, ?> metodo : bytes.getMethods()) {
                 MethodDescriptor<?, ?> descriptor = metodo.getMethodDescriptor();
                 tipos.put(descriptor.getFullMethodName(), descriptor.getType());
