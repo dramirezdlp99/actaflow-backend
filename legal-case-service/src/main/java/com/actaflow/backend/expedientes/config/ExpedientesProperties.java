@@ -13,12 +13,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * (ver application.yaml); los secretos nunca tienen valor por defecto.
  */
 @ConfigurationProperties(prefix = "actaflow")
-public record ExpedientesProperties(String version, Hmac hmac, Grpc grpc, Bff bff, Motor motor, Estado estado) {
+public record ExpedientesProperties(String version, Hmac hmac, Grpc grpc, Bff bff, Motor motor, Estado estado,
+                                    Identidad identidad) {
 
     private static final int LONGITUD_MINIMA_SECRETO = 32;
 
     public ExpedientesProperties {
-        exigir(hmac != null && grpc != null && bff != null && motor != null && estado != null,
+        exigir(hmac != null && grpc != null && bff != null && motor != null && estado != null && identidad != null,
                 "Falta configuracion de actaflow.*");
         exigirSecreto(bff.hmacSecret(), "ACTAFLOW_LEGAL_CASE_HMAC_SECRET");
         exigirSecreto(motor.hmacSecret(), "ACTAFLOW_ENGINE_HMAC_SECRET");
@@ -29,14 +30,9 @@ public record ExpedientesProperties(String version, Hmac hmac, Grpc grpc, Bff bf
         exigir(grpc.nativePort() >= -1 && grpc.nativePort() <= 65_535,
                 "ACTAFLOW_GRPC_NATIVE_PORT debe ser -1 (desactivado), 0 (libre) o un puerto");
         exigir(grpc.maxMessageBytes() >= 1024, "actaflow.grpc.max-message-bytes es demasiado pequeno");
-        // Falla al arrancar, no en la primera llamada, si el transporte esta mal escrito.
-        Transporte transporte = ClienteGrpc.interpretar(motor.transport());
-        if (transporte == Transporte.GRPC_WEB) {
-            exigir(motor.url() != null, "Con ACTAFLOW_ENGINE_TRANSPORT=grpc-web falta ACTAFLOW_ENGINE_URL");
-        } else {
-            exigir(motor.grpcTarget() != null && !motor.grpcTarget().isBlank(),
-                    "Con ACTAFLOW_ENGINE_TRANSPORT=grpc falta ACTAFLOW_ENGINE_GRPC_TARGET");
-        }
+        // Falla al arrancar, no en la primera llamada, si un transporte esta mal escrito.
+        exigirDestino(motor.transport(), motor.grpcTarget(), motor.url(), "ENGINE");
+        exigirDestino(identidad.transport(), identidad.grpcTarget(), identidad.url(), "IDENTITY");
     }
 
     /** Parametros comunes de las firmas HMAC. */
@@ -73,6 +69,29 @@ public record ExpedientesProperties(String version, Hmac hmac, Grpc grpc, Bff bf
 
     /** Tiempos maximos de cada comprobacion de GetServiceStatus. */
     public record Estado(Duration timeoutBaseDatos, Duration timeoutMotor) {
+    }
+
+    /**
+     * identity-service, solo para pedir la clave PUBLICA que verifica los tokens (sin secreto: ese
+     * servicio de identity es publico, como un JWKS).
+     *
+     * @param transport      {@code grpc} (nativo, local y CI) o {@code grpc-web} (Render Free)
+     * @param grpcTarget     {@code host:puerto} del gRPC nativo de identity
+     * @param url            URL publica de identity, para gRPC-Web
+     * @param connectTimeout tiempo maximo para conectar
+     * @param requestTimeout plazo de la llamada (identity puede estar despertando en Render)
+     */
+    public record Identidad(String transport, String grpcTarget, URI url, Duration connectTimeout,
+                            Duration requestTimeout) {
+    }
+
+    private static void exigirDestino(String transporte, String destino, URI url, String servicio) {
+        if (ClienteGrpc.interpretar(transporte) == Transporte.GRPC_WEB) {
+            exigir(url != null, "Con ACTAFLOW_" + servicio + "_TRANSPORT=grpc-web falta ACTAFLOW_" + servicio + "_URL");
+        } else {
+            exigir(destino != null && !destino.isBlank(),
+                    "Con ACTAFLOW_" + servicio + "_TRANSPORT=grpc falta ACTAFLOW_" + servicio + "_GRPC_TARGET");
+        }
     }
 
     private static void exigirSecreto(String secreto, String variable) {
