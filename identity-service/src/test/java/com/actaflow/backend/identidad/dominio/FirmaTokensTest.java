@@ -23,7 +23,7 @@ class FirmaTokensTest {
 
     @Test
     void unTokenEmitidoSeVerificaHastaQueVence() {
-        FirmaTokens.TokenEmitido emitido = firma.emitir(principal, AHORA);
+        FirmaTokens.TokenEmitido emitido = firma.emitir(principal, "ana@prueba.test", "Ana \"la\" Conciliadora", AHORA);
         assertEquals(AHORA.plusSeconds(900), emitido.venceEn());
         assertEquals(principal, firma.verificar(emitido.token(), AHORA.plusSeconds(899)).orElseThrow());
         assertTrue(firma.verificar(emitido.token(), AHORA.plusSeconds(900)).isEmpty());
@@ -36,14 +36,14 @@ class FirmaTokensTest {
         assertArrayEquals(firma.clavePublica().getEncoded(), misma.clavePublica().getEncoded());
         assertEquals(firma.idClave(), misma.idClave());
         assertNotEquals(firma.idClave(), otra.idClave());
-        String token = firma.emitir(principal, AHORA).token();
+        String token = firma.emitir(principal, "ana@prueba.test", "Ana \"la\" Conciliadora", AHORA).token();
         assertEquals(principal, misma.verificar(token, AHORA).orElseThrow());
         assertTrue(otra.verificar(token, AHORA).isEmpty());
     }
 
     @Test
     void cualquierAlteracionInvalidaElToken() {
-        String token = firma.emitir(principal, AHORA).token();
+        String token = firma.emitir(principal, "ana@prueba.test", "Ana \"la\" Conciliadora", AHORA).token();
         String[] partes = token.split("\\.");
         String cargaAdmin = Base64.getUrlEncoder().withoutPadding().encodeToString(
                 new String(Base64.getUrlDecoder().decode(partes[1]), StandardCharsets.UTF_8)
@@ -56,7 +56,7 @@ class FirmaTokensTest {
 
     @Test
     void otrosServiciosVerificanConLaClavePublica() {
-        String token = firma.emitir(principal, AHORA).token();
+        String token = firma.emitir(principal, "ana@prueba.test", "Ana \"la\" Conciliadora", AHORA).token();
         assertEquals(principal,
                 FirmaTokens.verificar(token, AHORA, firma.clavePublica(), firma.idClave()).orElseThrow());
     }
