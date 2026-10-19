@@ -14,6 +14,7 @@ import com.actaflow.backend.plataforma.grpc.ClienteGrpc;
 
 import io.grpc.BindableService;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -32,7 +33,8 @@ public class EstadoConfig {
     public static final String MOTOR = "ai-engine";
 
     @Bean
-    public VerificadorEstado verificadorEstado(DataSource baseDatos, ClienteGrpc clienteMotor,
+    public VerificadorEstado verificadorEstado(DataSource baseDatos,
+                                               @Qualifier("clienteMotor") ClienteGrpc clienteMotor,
                                                ExpedientesProperties propiedades, Clock reloj) {
         ExpedientesProperties.Estado estado = propiedades.estado();
         return new VerificadorEstado(NOMBRE_SERVICIO, propiedades.version(), List.of(
