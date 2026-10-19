@@ -1,6 +1,6 @@
 package com.actaflow.backend.identidad.grpc;
 
-import static com.actaflow.backend.identidad.grpc.Respuestas.responder;
+import static com.actaflow.backend.plataforma.rpc.Respuestas.responder;
 
 import com.actaflow.backend.identidad.aplicacion.ServicioAutenticacion;
 import com.actaflow.contracts.identity.v1.AccountServiceGrpc;
