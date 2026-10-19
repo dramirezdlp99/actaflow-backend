@@ -11,7 +11,7 @@ servicios gRPC definidos primero en [`actaflow-contracts`](https://github.com/dr
 | Puerto web (gRPC-Web + `/actuator/health`) | **9098** | **9097** |
 | Puerto gRPC nativo (HTTP/2) | **9198** | **9197** |
 | Esquema PostgreSQL | `identity` | `legal_case` |
-| Llama a | — | motor de IA (Python) |
+| Llama a | — | motor de IA (Python) e identity (solo la clave pública de los tokens) |
 
 Java 21 · Spring Boot 4.1 · grpc-java 1.84.3 · protobuf 3.25.8 · PostgreSQL 17 (Neon) + Flyway.
 El puerto 8080 no se usa nunca (lo ocupa Jenkins).
@@ -23,8 +23,10 @@ pom.xml                  padre: versiones fijadas de gRPC y protobuf
 contracts/               copia FIJADA de actaflow-contracts (ver contracts.lock.json)
 rpc-contracts/           codigo Java GENERADO desde contracts/ (mensajes + stubs gRPC)
 platform/                infraestructura comun, Java puro, sin Spring:
-  seguridad/             FirmaHmac (mismo mensaje canonico que el BFF y el motor)
-  grpc/                  ServidorGrpc (en memoria + nativo), interceptores de firma, ClienteGrpc
+  seguridad/             FirmaHmac (mismo mensaje canonico que el BFF y el motor), TokenAcceso (JWT EdDSA)
+  grpc/                  ServidorGrpc (en memoria + nativo), interceptores de firma, ClienteGrpc, ServicioPublico
+  persistencia/          Bd: JDBC con SQL explicito y transacciones
+  rpc/                   FalloRpc y Respuestas: errores con detalles FieldViolations del contrato
   grpcweb/               PasarelaGrpcWeb (servidor), CanalGrpcWeb (cliente), tramas
   estado/                VerificadorEstado, ServicioEstado, comprobaciones de BD y de servicios
   web/                   FiltroCabecerasSeguridad
@@ -136,7 +138,9 @@ Repite el `install` cuando cambien `platform` o `rpc-contracts`.
 **Dockerfile Path** a `./legal-case-service/Dockerfile` y **Docker Build Context Directory** a `.`
 **antes** de hacer push. Variables: `ACTAFLOW_DB_URL`, `ACTAFLOW_DB_USERNAME`,
 `ACTAFLOW_DB_PASSWORD`, `ACTAFLOW_LEGAL_CASE_HMAC_SECRET`, `ACTAFLOW_ENGINE_URL`,
-`ACTAFLOW_ENGINE_HMAC_SECRET`. Health check: `/actuator/health`.
+`ACTAFLOW_ENGINE_HMAC_SECRET` y `ACTAFLOW_IDENTITY_URL` (la URL pública de identity-service en
+Render; de ahí pide la clave pública que verifica los tokens, sin secreto). Health check:
+`/actuator/health`.
 
 **identity-service** (nuevo): *New → Web Service* → este mismo repo, runtime Docker, región
 Virginia, plan Free, Dockerfile Path `./identity-service/Dockerfile`, contexto `.`. Variables:
@@ -157,7 +161,9 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 | `actaflow.identity.v1.AccountService` | Cuenta actual, codigos de recuperacion, cambio de contrasena | — |
 | `actaflow.identity.v1.OrganizationService` | Organizacion, miembros, invitaciones, roles | — |
 | `actaflow.identity.v1.KeyDirectoryService` | Claves publicas de los miembros | — |
-| `actaflow.identity.v1.TokenVerificationService` | Clave publica Ed25519 que firma los tokens | — |
+| `actaflow.identity.v1.TokenVerificationService` | Clave publica Ed25519 que firma los tokens (**pública**, sin firma HMAC, como un JWKS) | — |
+| `actaflow.cases.v1.CaseService` | — | Crear, ver, listar y editar expedientes; estados y línea de tiempo |
+| `actaflow.cases.v1.ParticipantService` | — | Participantes, invitaciones por correo y reparto de la clave del caso |
 
 ## Identidad (bloque BE-2)
 
@@ -173,3 +179,26 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 - **Sin servicio de correo:** invitar devuelve el token una sola vez y el administrador comparte
   el enlace. La base guarda solo su hash.
 - **Persistencia:** JDBC directo sobre el esquema `identity` (migracion `V2`).
+
+## Expedientes (bloque BE-3)
+
+- **Sesión verificada localmente:** cada llamada a `CaseService` y `ParticipantService` exige la
+  firma HMAC del BFF **y** el token de acceso de la persona (`authorization: Bearer`). El token se
+  verifica en legal-case con la clave pública Ed25519 de identity (`TokenAcceso`, en `platform`),
+  sin llamar a identity en cada petición. Las claves se piden una vez por hora, y ante un id de
+  clave desconocido como mucho una vez cada 30 s.
+- **Acceso solo para participantes:** quien no participa recibe `NOT_FOUND`, nunca
+  `PERMISSION_DENIED`, así no se revela que el caso existe. Los administradores de la organización
+  no ven el contenido de casos ajenos.
+- **Cifrado de punta a punta:** el título y el resumen viajan cifrados con la clave del caso
+  (`EncryptedBlob`) y esa clave solo existe envuelta para la clave pública de cada participante
+  (`WrappedKey`). El backend guarda los mensajes protobuf tal cual y no puede abrirlos.
+- **Invitaciones por correo:** quien no tiene cuenta (o no ha entrado) queda `INVITED`; al entrar
+  con su cuenta de la misma organización el caso aparece solo (`AWAITING_KEY`) y cualquier
+  participante que ya tenga la clave se la entrega (`GrantCaseKey` → `ACTIVE`).
+- **Reglas:** concurrencia optimista (`expected_revision`, si cambió → `ABORTED`); escrituras
+  idempotentes por cuenta y clave; transiciones de estado válidas (abierto → en audiencia →
+  acuerdo / no acuerdo → archivado, con suspensión y reapertura); el caso siempre conserva un
+  conciliador; las partes llevan lado y calidad (regla CEL del contrato).
+- **Persistencia:** migración `V3` en el esquema `legal_case` (`caso`, `participante`,
+  `evento_caso`, `idempotencia`).
