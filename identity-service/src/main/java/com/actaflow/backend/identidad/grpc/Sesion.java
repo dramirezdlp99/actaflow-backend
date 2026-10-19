@@ -1,7 +1,7 @@
 package com.actaflow.backend.identidad.grpc;
 
-import com.actaflow.backend.identidad.dominio.FalloIdentidad;
-import com.actaflow.backend.identidad.dominio.FalloIdentidad.Tipo;
+import com.actaflow.backend.plataforma.rpc.FalloRpc;
+import com.actaflow.backend.plataforma.rpc.FalloRpc.Tipo;
 import com.actaflow.backend.identidad.dominio.Principal;
 
 import io.grpc.Context;
@@ -18,7 +18,7 @@ final class Sesion {
     static Principal exigir() {
         Principal principal = CLAVE.get();
         if (principal == null) {
-            throw new FalloIdentidad(Tipo.NO_AUTENTICADO, "Inicia sesion para continuar");
+            throw new FalloRpc(Tipo.NO_AUTENTICADO, "Inicia sesion para continuar");
         }
         return principal;
     }
