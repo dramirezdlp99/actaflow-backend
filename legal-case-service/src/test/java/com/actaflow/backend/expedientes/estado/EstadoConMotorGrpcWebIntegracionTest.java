@@ -13,6 +13,7 @@ import com.actaflow.contracts.system.v1.Transport;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -34,6 +35,7 @@ class EstadoConMotorGrpcWebIntegracionTest {
     private ServidorGrpc servidorGrpc;
 
     @Autowired
+    @Qualifier("clienteMotor")
     private ClienteGrpc clienteMotor;
 
     @DynamicPropertySource
