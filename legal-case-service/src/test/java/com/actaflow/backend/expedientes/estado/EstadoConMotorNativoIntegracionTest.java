@@ -65,7 +65,7 @@ class EstadoConMotorNativoIntegracionTest {
 
         ComponentStatus baseDatos = estado.getComponents(0);
         assertEquals(HealthState.HEALTH_STATE_OK, baseDatos.getState());
-        assertEquals("2", baseDatos.getVersion());
+        assertEquals("3", baseDatos.getVersion());
 
         ComponentStatus motor = estado.getComponents(1);
         assertEquals(ComponentKind.COMPONENT_KIND_SERVICE, motor.getKind());
@@ -93,12 +93,15 @@ class EstadoConMotorNativoIntegracionTest {
     }
 
     @Test
-    void flywayMigroElEsquemaPropioYRetiroLasTablasDelEsquemaPublico() {
-        assertEquals(List.of("1", "2"), jdbc.queryForList(
+    void flywayMigroElEsquemaPropioConExpedientesYRetiroLasTablasDelEsquemaPublico() {
+        assertEquals(List.of("1", "2", "3"), jdbc.queryForList(
                 "select version from legal_case.flyway_schema_history where success and version is not null"
                         + " order by installed_rank",
                 String.class));
         assertEquals(1, contarTablas("legal_case", "trabajo"));
+        for (String tabla : List.of("caso", "participante", "evento_caso", "idempotencia")) {
+            assertEquals(1, contarTablas("legal_case", tabla), tabla);
+        }
         assertEquals(0, contarTablas("public", "trabajo"));
         assertEquals(0, contarTablas("public", "flyway_schema_history"));
     }
