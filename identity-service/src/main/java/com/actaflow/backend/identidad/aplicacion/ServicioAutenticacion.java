@@ -15,13 +15,13 @@ import java.util.UUID;
 import com.actaflow.backend.identidad.aplicacion.Cuentas.Cuenta;
 import com.actaflow.backend.identidad.dominio.Base32;
 import com.actaflow.backend.identidad.dominio.Criptografia;
-import com.actaflow.backend.identidad.dominio.FalloIdentidad;
-import com.actaflow.backend.identidad.dominio.FalloIdentidad.Tipo;
+import com.actaflow.backend.plataforma.rpc.FalloRpc;
+import com.actaflow.backend.plataforma.rpc.FalloRpc.Tipo;
 import com.actaflow.backend.identidad.dominio.FirmaTokens;
 import com.actaflow.backend.identidad.dominio.Principal;
 import com.actaflow.backend.identidad.dominio.Rol;
 import com.actaflow.backend.identidad.dominio.Totp;
-import com.actaflow.backend.identidad.persistencia.Bd;
+import com.actaflow.backend.plataforma.persistencia.Bd;
 import com.actaflow.contracts.identity.v1.Account;
 import com.actaflow.contracts.identity.v1.ChangePasswordRequest;
 import com.actaflow.contracts.identity.v1.CompleteSecondFactorRequest;
@@ -112,7 +112,7 @@ public final class ServicioAutenticacion {
             return Optional.of(LoginResponse.newBuilder().setChallengeId(desafio.toString())
                     .setChallengeExpiresAt(Cuentas.marca(vence)).build());
         });
-        return resultado.orElseThrow(FalloIdentidad::credenciales);
+        return resultado.orElseThrow(FalloRpc::credenciales);
     }
 
     private void registrarFallo(Connection c, Cuenta cuenta, Instant ahora) throws SQLException {
@@ -154,7 +154,7 @@ public final class ServicioAutenticacion {
                     .setSession(emitirSesion(c, cuenta, UUID.randomUUID(), ahora))
                     .setRemainingRecoveryCodes(restantes).build());
         });
-        return resultado.orElseThrow(FalloIdentidad::credenciales);
+        return resultado.orElseThrow(FalloRpc::credenciales);
     }
 
     private boolean consumirTotp(Connection c, Cuenta cuenta, String codigo, Instant ahora) throws SQLException {
@@ -188,7 +188,7 @@ public final class ServicioAutenticacion {
                 // Reintento del mismo registro (por ejemplo, se cayo la red): misma respuesta.
                 Cuenta cuenta = repetido.get();
                 if (cuenta.confirmada() || !cuenta.correo().equals(correo)) {
-                    throw new FalloIdentidad(Tipo.YA_EXISTE, "Este registro ya se completo");
+                    throw new FalloRpc(Tipo.YA_EXISTE, "Este registro ya se completo");
                 }
                 return respuestaRegistro(cuenta);
             }
@@ -200,10 +200,10 @@ public final class ServicioAutenticacion {
                             Rol.valueOf(f.getString("role"))),
                     cripto.huella("invitation", peticion.getInvitationToken()), ahora)
                     .filter(i -> normalizarCorreo(i.correo()).equals(correo))
-                    .orElseThrow(() -> new FalloIdentidad(Tipo.PRECONDICION,
+                    .orElseThrow(() -> new FalloRpc(Tipo.PRECONDICION,
                             "La invitacion no es valida, ya se uso o vencio"));
             if (Cuentas.porCorreo(c, correo, false).isPresent()) {
-                throw new FalloIdentidad(Tipo.YA_EXISTE, "Ya existe una cuenta con ese correo");
+                throw new FalloRpc(Tipo.YA_EXISTE, "Ya existe una cuenta con ese correo");
             }
             UUID id = UUID.randomUUID();
             byte[] secretoTotp = Criptografia.aleatorio(20);
@@ -243,12 +243,12 @@ public final class ServicioAutenticacion {
         return bd.transaccion(c -> {
             Cuenta cuenta = Bd.uno(c, "select " + Cuentas.COLUMNAS + " from account where totp_enrollment_id = ?"
                     + " for update", Cuentas::leer, UUID.fromString(inscripcion))
-                    .orElseThrow(() -> new FalloIdentidad(Tipo.NO_ENCONTRADO, "Inscripcion no encontrada"));
+                    .orElseThrow(() -> new FalloRpc(Tipo.NO_ENCONTRADO, "Inscripcion no encontrada"));
             if (cuenta.confirmada()) {
-                throw new FalloIdentidad(Tipo.PRECONDICION, "El segundo factor ya estaba confirmado");
+                throw new FalloRpc(Tipo.PRECONDICION, "El segundo factor ya estaba confirmado");
             }
             if (!consumirTotp(c, cuenta, codigo, ahora)) {
-                throw new FalloIdentidad(Tipo.NO_AUTENTICADO, "Codigo incorrecto: revisa la hora de tu telefono");
+                throw new FalloRpc(Tipo.NO_AUTENTICADO, "Codigo incorrecto: revisa la hora de tu telefono");
             }
             Bd.ejecutar(c, "update account set totp_confirmed_at = ?, last_sign_in_at = ? where id = ?",
                     ahora, ahora, cuenta.id());
@@ -289,7 +289,8 @@ public final class ServicioAutenticacion {
 
     private Session emitirSesion(Connection c, Cuenta cuenta, UUID familia, Instant ahora) throws SQLException {
         FirmaTokens.TokenEmitido acceso = tokens.emitir(
-                new Principal(cuenta.id(), cuenta.organizacionId(), cuenta.rol()), ahora);
+                new Principal(cuenta.id(), cuenta.organizacionId(), cuenta.rol()), cuenta.correo(), cuenta.nombre(),
+                ahora);
         String refresco = Criptografia.tokenAleatorio(32);
         Instant venceRefresco = ahora.plus(ajustes.vigenciaRefresco());
         Bd.ejecutar(c, "insert into refresh_token (id, account_id, family_id, token_hash, expires_at, created_at)"
@@ -332,7 +333,7 @@ public final class ServicioAutenticacion {
             Bd.ejecutar(c, "update refresh_token set revoked_at = ? where id = ?", ahora, r.id());
             return Optional.of(emitirSesion(c, cuenta, r.familia(), ahora));
         });
-        return resultado.orElseThrow(FalloIdentidad::credenciales);
+        return resultado.orElseThrow(FalloRpc::credenciales);
     }
 
     /** Cierra la sesion revocando su familia de refresco. Idempotente. */
@@ -349,7 +350,7 @@ public final class ServicioAutenticacion {
         return bd.transaccion(c -> Cuentas.porId(c, principal.cuentaId(), false))
                 .filter(Cuenta::activa)
                 .map(Cuentas::contrato)
-                .orElseThrow(FalloIdentidad::credenciales);
+                .orElseThrow(FalloRpc::credenciales);
     }
 
     /** Nuevos codigos de recuperacion; exige un codigo TOTP y la clave privada recifrada con ellos. */
@@ -357,9 +358,9 @@ public final class ServicioAutenticacion {
         Instant ahora = reloj.instant();
         return bd.transaccion(c -> {
             Cuenta cuenta = Cuentas.porId(c, principal.cuentaId(), true).filter(Cuenta::activa)
-                    .orElseThrow(FalloIdentidad::credenciales);
+                    .orElseThrow(FalloRpc::credenciales);
             if (!consumirTotp(c, cuenta, codigoTotp, ahora)) {
-                throw new FalloIdentidad(Tipo.NO_AUTENTICADO, "Codigo incorrecto");
+                throw new FalloRpc(Tipo.NO_AUTENTICADO, "Codigo incorrecto");
             }
             Bd.ejecutar(c, "update account set private_key_by_recovery = ? where id = ?", privadaPorRecuperacion,
                     cuenta.id());
@@ -372,11 +373,11 @@ public final class ServicioAutenticacion {
         Instant ahora = reloj.instant();
         bd.transaccion(c -> {
             Cuenta cuenta = Cuentas.porId(c, principal.cuentaId(), true).filter(Cuenta::activa)
-                    .orElseThrow(FalloIdentidad::credenciales);
+                    .orElseThrow(FalloRpc::credenciales);
             byte[] actual = cripto.huella("verifier", peticion.getCurrentAuthVerifier().toByteArray());
             if (!Criptografia.igualesConstante(actual, cuenta.hashVerificador())
                     || !consumirTotp(c, cuenta, peticion.getTotpCode(), ahora)) {
-                throw FalloIdentidad.credenciales();
+                throw FalloRpc.credenciales();
             }
             Bd.ejecutar(c, "update account set kdf_salt = ?, kdf_iterations = ?, verifier_hash = ?,"
                     + " private_key_by_password = ? where id = ?", peticion.getNewSalt().toByteArray(),
