@@ -5,8 +5,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.regex.Pattern;
 
-import com.actaflow.backend.identidad.dominio.FalloIdentidad;
-import com.actaflow.backend.identidad.dominio.FalloIdentidad.Violacion;
+import com.actaflow.backend.plataforma.rpc.FalloRpc;
+import com.actaflow.backend.plataforma.rpc.FalloRpc.Violacion;
 import com.actaflow.contracts.crypto.v1.CipherSuite;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
 import com.actaflow.contracts.crypto.v1.PublicKey;
@@ -137,7 +137,7 @@ final class Reglas {
     /** Lanza INVALID_ARGUMENT con todas las reglas incumplidas. */
     void verificar() {
         if (!violaciones.isEmpty()) {
-            throw new FalloIdentidad(FalloIdentidad.Tipo.ARGUMENTO_INVALIDO, "La peticion incumple el contrato",
+            throw new FalloRpc(FalloRpc.Tipo.ARGUMENTO_INVALIDO, "La peticion incumple el contrato",
                     violaciones);
         }
     }
