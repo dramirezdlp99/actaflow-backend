@@ -72,6 +72,15 @@ actaflow:
     hmac-secret: ${ACTAFLOW_ENGINE_HMAC_SECRET:}
     connect-timeout: 3s
     request-timeout: 30s
+  identidad:
+    # Solo para la clave publica que verifica los tokens de sesion (sin secreto: es publica).
+    # grpc: nativo (local, CI). grpc-web: Render Free (lo fija el Dockerfile).
+    transport: ${ACTAFLOW_IDENTITY_TRANSPORT:grpc}
+    grpc-target: ${ACTAFLOW_IDENTITY_GRPC_TARGET:localhost:9198}
+    url: ${ACTAFLOW_IDENTITY_URL:http://localhost:9098}
+    connect-timeout: 5s
+    # identity puede estar dormido en Render: la primera peticion espera a que despierte.
+    request-timeout: 90s
   estado:
     timeout-base-datos: 15s
     timeout-motor: 7s
