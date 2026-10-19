@@ -1,6 +1,6 @@
 package com.actaflow.backend.identidad.grpc;
 
-import static com.actaflow.backend.identidad.grpc.Respuestas.responder;
+import static com.actaflow.backend.plataforma.rpc.Respuestas.responder;
 
 import java.util.Optional;
 import java.util.UUID;
