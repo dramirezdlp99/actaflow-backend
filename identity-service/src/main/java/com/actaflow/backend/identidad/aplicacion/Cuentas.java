@@ -8,7 +8,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import com.actaflow.backend.identidad.dominio.Rol;
-import com.actaflow.backend.identidad.persistencia.Bd;
+import com.actaflow.backend.plataforma.persistencia.Bd;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
 import com.actaflow.contracts.crypto.v1.PublicKey;
 import com.actaflow.contracts.identity.v1.Account;
