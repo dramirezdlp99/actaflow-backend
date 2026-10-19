@@ -15,7 +15,8 @@ import com.actaflow.backend.identidad.grpc.ServicioAuthGrpc;
 import com.actaflow.backend.identidad.grpc.ServicioClavesGrpc;
 import com.actaflow.backend.identidad.grpc.ServicioCuentaGrpc;
 import com.actaflow.backend.identidad.grpc.ServicioOrganizacionGrpc;
-import com.actaflow.backend.identidad.persistencia.Bd;
+import com.actaflow.backend.plataforma.grpc.ServicioPublico;
+import com.actaflow.backend.plataforma.persistencia.Bd;
 
 import io.grpc.BindableService;
 import io.grpc.ServerInterceptors;
@@ -84,9 +85,10 @@ public class IdentidadConfig {
         return conSesion(new ServicioClavesGrpc.Directorio(servicio), sesion);
     }
 
+    /** Publico (sin firma HMAC): la clave que verifica los tokens es publica, como un JWKS. */
     @Bean
     public BindableService servicioVerificacionGrpc(FirmaTokens tokens) {
-        return new ServicioClavesGrpc.Verificacion(tokens);
+        return ServicioPublico.de(new ServicioClavesGrpc.Verificacion(tokens));
     }
 
     /** Primer arranque: organizacion e invitacion del administrador, si se configuraron. */
