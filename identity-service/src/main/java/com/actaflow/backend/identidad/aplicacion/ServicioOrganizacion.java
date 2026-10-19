@@ -14,11 +14,11 @@ import java.util.UUID;
 
 import com.actaflow.backend.identidad.aplicacion.Cuentas.Cuenta;
 import com.actaflow.backend.identidad.dominio.Criptografia;
-import com.actaflow.backend.identidad.dominio.FalloIdentidad;
-import com.actaflow.backend.identidad.dominio.FalloIdentidad.Tipo;
+import com.actaflow.backend.plataforma.rpc.FalloRpc;
+import com.actaflow.backend.plataforma.rpc.FalloRpc.Tipo;
 import com.actaflow.backend.identidad.dominio.Principal;
 import com.actaflow.backend.identidad.dominio.Rol;
-import com.actaflow.backend.identidad.persistencia.Bd;
+import com.actaflow.backend.plataforma.persistencia.Bd;
 import com.actaflow.contracts.common.v1.PageInfo;
 import com.actaflow.contracts.identity.v1.AccountPublicKey;
 import com.actaflow.contracts.identity.v1.InviteMemberResponse;
@@ -46,7 +46,7 @@ public final class ServicioOrganizacion {
                 f -> Organization.newBuilder().setId(Bd.uuid(f, "id").toString()).setName(f.getString("name"))
                         .setTaxId(f.getString("tax_id")).setCity(f.getString("city")).build(),
                 principal.organizacionId()))
-                .orElseThrow(() -> new FalloIdentidad(Tipo.NO_ENCONTRADO, "Organizacion no encontrada"));
+                .orElseThrow(() -> new FalloRpc(Tipo.NO_ENCONTRADO, "Organizacion no encontrada"));
     }
 
     /** Miembros de la organizacion, por fecha de alta. Los externos no pueden listarlos. */
@@ -77,7 +77,7 @@ public final class ServicioOrganizacion {
         Instant vence = ahora.plus(VIGENCIA_INVITACION);
         UUID id = bd.transaccion(c -> {
             if (Cuentas.porCorreo(c, normalizado, false).isPresent()) {
-                throw new FalloIdentidad(Tipo.YA_EXISTE, "Ya existe una cuenta con ese correo");
+                throw new FalloRpc(Tipo.YA_EXISTE, "Ya existe una cuenta con ese correo");
             }
             Optional<UUID> previa = Bd.uno(c, "select id from invitation where organization_id = ?"
                     + " and idempotency_key = ? and used_at is null for update", f -> Bd.uuid(f, "id"),
@@ -105,7 +105,7 @@ public final class ServicioOrganizacion {
             Cuenta cuenta = miembroDe(c, principal, cuentaId);
             boolean pierdeAdmin = cuenta.rol() == Rol.ADMIN && rol != Rol.ADMIN && cuenta.activa();
             if (pierdeAdmin && adminsActivos(c, principal) <= 1) {
-                throw new FalloIdentidad(Tipo.PRECONDICION, "La organizacion debe conservar un administrador");
+                throw new FalloRpc(Tipo.PRECONDICION, "La organizacion debe conservar un administrador");
             }
             Bd.ejecutar(c, "update account set role = ? where id = ?", rol.name(), cuentaId);
             return miembro(Cuentas.porId(c, cuentaId, false).orElseThrow());
@@ -116,7 +116,7 @@ public final class ServicioOrganizacion {
     public Member activar(Principal principal, UUID cuentaId, boolean activa) {
         exigirAdmin(principal);
         if (principal.cuentaId().equals(cuentaId)) {
-            throw new FalloIdentidad(Tipo.PRECONDICION, "No puedes cambiar tu propio estado");
+            throw new FalloRpc(Tipo.PRECONDICION, "No puedes cambiar tu propio estado");
         }
         Instant ahora = reloj.instant();
         return bd.transaccion(c -> {
@@ -148,7 +148,7 @@ public final class ServicioOrganizacion {
     private Cuenta miembroDe(Connection c, Principal principal, UUID cuentaId) throws SQLException {
         return Cuentas.porId(c, cuentaId, true)
                 .filter(x -> x.organizacionId().equals(principal.organizacionId()))
-                .orElseThrow(() -> new FalloIdentidad(Tipo.NO_ENCONTRADO, "Miembro no encontrado"));
+                .orElseThrow(() -> new FalloRpc(Tipo.NO_ENCONTRADO, "Miembro no encontrado"));
     }
 
     private static int adminsActivos(Connection c, Principal principal) throws SQLException {
@@ -163,13 +163,13 @@ public final class ServicioOrganizacion {
 
     private static void exigirAdmin(Principal principal) {
         if (!principal.esAdmin()) {
-            throw new FalloIdentidad(Tipo.SIN_PERMISO, "Solo un administrador puede hacer esto");
+            throw new FalloRpc(Tipo.SIN_PERMISO, "Solo un administrador puede hacer esto");
         }
     }
 
     private static void exigirInterno(Principal principal) {
         if (principal.rol() == Rol.EXTERNAL) {
-            throw new FalloIdentidad(Tipo.SIN_PERMISO, "Las cuentas externas no ven la lista de miembros");
+            throw new FalloRpc(Tipo.SIN_PERMISO, "Las cuentas externas no ven la lista de miembros");
         }
     }
 
@@ -190,8 +190,8 @@ public final class ServicioOrganizacion {
             }
             return valor;
         } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
-            throw new FalloIdentidad(Tipo.ARGUMENTO_INVALIDO, "page_token no valido",
-                    List.of(new FalloIdentidad.Violacion("page.page_token", "page_token.format",
+            throw new FalloRpc(Tipo.ARGUMENTO_INVALIDO, "page_token no valido",
+                    List.of(new FalloRpc.Violacion("page.page_token", "page_token.format",
                             "value is not a token returned by this service")));
         }
     }
