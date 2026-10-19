@@ -7,7 +7,7 @@ import java.util.UUID;
 
 import com.actaflow.backend.identidad.dominio.Criptografia;
 import com.actaflow.backend.identidad.dominio.Rol;
-import com.actaflow.backend.identidad.persistencia.Bd;
+import com.actaflow.backend.plataforma.persistencia.Bd;
 
 /**
  * Primer arranque: crea la organizacion y la invitacion del primer administrador.
