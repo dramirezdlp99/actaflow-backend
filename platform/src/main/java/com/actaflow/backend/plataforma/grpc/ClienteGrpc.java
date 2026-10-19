@@ -31,7 +31,7 @@ public final class ClienteGrpc implements AutoCloseable {
     private final Transporte transporte;
 
     private ClienteGrpc(Channel base, AutoCloseable cierre, Transporte transporte, FirmaHmac firma) {
-        this.canal = ClientInterceptors.intercept(base, new InterceptorClienteFirma(firma));
+        this.canal = firma == null ? base : ClientInterceptors.intercept(base, new InterceptorClienteFirma(firma));
         this.cierre = cierre;
         this.transporte = transporte;
     }
@@ -47,6 +47,14 @@ public final class ClienteGrpc implements AutoCloseable {
      */
     public static ClienteGrpc crear(String transporte, String destinoNativo, URI urlWeb, FirmaHmac firma,
                                     Duration conexion, Duration plazo, int maxMensaje) {
+        if (firma == null) {
+            throw new IllegalArgumentException("Un cliente firmado necesita el secreto del par");
+        }
+        return crearCon(transporte, destinoNativo, urlWeb, firma, conexion, plazo, maxMensaje);
+    }
+
+    private static ClienteGrpc crearCon(String transporte, String destinoNativo, URI urlWeb, FirmaHmac firma,
+                                        Duration conexion, Duration plazo, int maxMensaje) {
         Transporte elegido = interpretar(transporte);
         if (elegido == Transporte.GRPC_WEB) {
             if (urlWeb == null) {
@@ -63,6 +71,15 @@ public final class ClienteGrpc implements AutoCloseable {
                 .build();
         return new ClienteGrpc(nativo, () -> nativo.shutdownNow().awaitTermination(5, TimeUnit.SECONDS),
                 elegido, firma);
+    }
+
+    /**
+     * Cliente SIN firma HMAC, solo para servicios publicados con {@link ServicioPublico} (por
+     * ejemplo, la clave publica que verifica los tokens). Mismos parametros que {@link #crear}.
+     */
+    public static ClienteGrpc crearPublico(String transporte, String destinoNativo, URI urlWeb, Duration conexion,
+                                           Duration plazo, int maxMensaje) {
+        return crearCon(transporte, destinoNativo, urlWeb, null, conexion, plazo, maxMensaje);
     }
 
     /** Lee {@code grpc} o {@code grpc-web}; cualquier otro valor es un error de configuracion. */
