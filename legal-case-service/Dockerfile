@@ -30,6 +30,8 @@ USER actaflow
 ENV ACTAFLOW_GRPC_NATIVE_PORT=-1
 # El motor de IA tambien vive en Render Free: se le llama por gRPC-Web (HTTP/1.1) a su URL publica.
 ENV ACTAFLOW_ENGINE_TRANSPORT=grpc-web
+# Lo mismo para identity-service, de donde solo se pide la clave publica de los tokens.
+ENV ACTAFLOW_IDENTITY_TRANSPORT=grpc-web
 
 # Memoria acotada al contenedor, GC serial (menos hilos y RAM) y arranque rapido en una CPU
 # fraccionada. ExitOnOutOfMemoryError deja que Render reinicie el servicio limpio.
