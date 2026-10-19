@@ -89,7 +89,8 @@ jobs:
           docker run -d --name legal-case --network host --memory=512m $BASE -e PORT=9097 \
             -e ACTAFLOW_LEGAL_CASE_HMAC_SECRET=$SECRETO_LEGAL_CASE \
             -e ACTAFLOW_ENGINE_HMAC_SECRET=$SECRETO_MOTOR \
-            -e ACTAFLOW_ENGINE_URL=http://127.0.0.1:9 actaflow-legal-case:ci
+            -e ACTAFLOW_ENGINE_URL=http://127.0.0.1:9 \
+            -e ACTAFLOW_IDENTITY_URL=http://127.0.0.1:9098 actaflow-legal-case:ci
       - name: Esperar /actuator/health de los dos
         run: |
           for puerto in 9098 9097; do
