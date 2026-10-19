@@ -20,14 +20,16 @@ import com.actaflow.backend.identidad.dominio.Base32;
 import com.actaflow.backend.identidad.dominio.Criptografia;
 import com.actaflow.backend.identidad.dominio.FirmaTokens;
 import com.actaflow.backend.identidad.dominio.Totp;
-import com.actaflow.backend.identidad.persistencia.Bd;
 import com.actaflow.backend.identidad.soporte.BaseDatosPrueba;
 import com.actaflow.backend.identidad.soporte.Navegador;
 import com.actaflow.backend.identidad.soporte.RelojMovil;
 import com.actaflow.backend.plataforma.grpc.InterceptorClienteFirma;
 import com.actaflow.backend.plataforma.grpc.Metadatos;
+import com.actaflow.backend.plataforma.grpc.ServicioPublico;
 import com.actaflow.backend.plataforma.grpc.ServidorGrpc;
+import com.actaflow.backend.plataforma.persistencia.Bd;
 import com.actaflow.backend.plataforma.seguridad.FirmaHmac;
+import com.actaflow.backend.plataforma.seguridad.TokenAcceso;
 import com.actaflow.contracts.common.v1.FieldViolations;
 import com.actaflow.contracts.common.v1.PageRequest;
 import com.actaflow.contracts.identity.v1.AccountServiceGrpc;
@@ -101,7 +103,7 @@ class FlujoIdentidadTest {
                 conSesion(new ServicioCuentaGrpc(auth), sesion),
                 conSesion(new ServicioOrganizacionGrpc(org), sesion),
                 conSesion(new ServicioClavesGrpc.Directorio(org), sesion),
-                new ServicioClavesGrpc.Verificacion(tokens));
+                ServicioPublico.de(new ServicioClavesGrpc.Verificacion(tokens)));
         FirmaHmac firma = new FirmaHmac(SECRETO_BFF, 300, reloj);
         servidor = new ServidorGrpc(servicios, firma, -1, 1 << 20);
         servidor.iniciar();
@@ -372,7 +374,8 @@ class FlujoIdentidadTest {
     @Test
     void losOtrosServiciosVerificanTokensConLaClavePublicada() throws Exception {
         Session sesion = alta(TOKEN_ARRANQUE, ADMIN, "clave-del-admin").getSession();
-        VerificationKey clave = TokenVerificationServiceGrpc.newBlockingStub(canal)
+        // Publica, como un JWKS: se puede pedir sin la firma HMAC del BFF (canal en memoria sin firmar).
+        VerificationKey clave = TokenVerificationServiceGrpc.newBlockingStub(servidor.canalEnMemoria())
                 .getVerificationKeys(GetVerificationKeysRequest.getDefaultInstance()).getKeys(0);
         assertEquals("Ed25519", clave.getAlgorithm());
         var publica = KeyFactory.getInstance("Ed25519")
@@ -380,6 +383,16 @@ class FlujoIdentidadTest {
         var principal = FirmaTokens.verificar(sesion.getAccessToken(), reloj.instant(), publica, clave.getKeyId())
                 .orElseThrow();
         assertEquals(sesion.getAccount().getId(), principal.cuentaId().toString());
+        // El token lleva correo y nombre: expedientes los usa para vincular invitaciones a casos.
+        var reclamos = TokenAcceso.verificar(sesion.getAccessToken(), reloj.instant(), publica, clave.getKeyId())
+                .orElseThrow();
+        assertEquals(ADMIN, reclamos.correo());
+        assertEquals(sesion.getAccount().getDisplayName(), reclamos.nombre());
+        // Los demas servicios siguen exigiendo la firma.
+        StatusRuntimeException sinFirma = assertThrows(StatusRuntimeException.class,
+                () -> AuthServiceGrpc.newBlockingStub(servidor.canalEnMemoria())
+                        .getLoginParameters(GetLoginParametersRequest.newBuilder().setEmail(ADMIN).build()));
+        assertEquals(Status.Code.UNAUTHENTICATED, sinFirma.getStatus().getCode());
     }
 
     @Test
