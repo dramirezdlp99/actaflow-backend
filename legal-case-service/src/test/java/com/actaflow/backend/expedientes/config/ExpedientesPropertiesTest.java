@@ -22,8 +22,11 @@ class ExpedientesPropertiesTest {
                 new ExpedientesProperties.Bff(secretoBff),
                 new ExpedientesProperties.Motor(transporte, destino, url, secretoMotor, Duration.ofSeconds(1),
                         Duration.ofSeconds(1)),
-                new ExpedientesProperties.Estado(Duration.ofSeconds(1), Duration.ofSeconds(1)));
+                new ExpedientesProperties.Estado(Duration.ofSeconds(1), Duration.ofSeconds(1)), IDENTIDAD);
     }
+
+    private static final ExpedientesProperties.Identidad IDENTIDAD = new ExpedientesProperties.Identidad("grpc",
+            "localhost:9198", null, Duration.ofSeconds(1), Duration.ofSeconds(1));
 
     private static void falla(String fragmento, Runnable accion) {
         IllegalStateException e = assertThrows(IllegalStateException.class, accion::run);
@@ -41,6 +44,17 @@ class ExpedientesPropertiesTest {
         falla("ACTAFLOW_LEGAL_CASE_HMAC_SECRET", () -> crear("", MOTOR, "grpc", "localhost:8102", null));
         falla("ACTAFLOW_ENGINE_HMAC_SECRET", () -> crear(BFF, "corto", "grpc", "localhost:8102", null));
         falla("deben ser distintos", () -> crear(BFF, BFF, "grpc", "localhost:8102", null));
+    }
+
+    @Test
+    void exigeElDestinoDeIdentitySegunSuTransporte() {
+        falla("ACTAFLOW_IDENTITY_URL", () -> new ExpedientesProperties("0.2.0", new ExpedientesProperties.Hmac(300),
+                new ExpedientesProperties.Grpc(-1, 4096, Duration.ofSeconds(30)), new ExpedientesProperties.Bff(BFF),
+                new ExpedientesProperties.Motor("grpc", "localhost:8102", null, MOTOR, Duration.ofSeconds(1),
+                        Duration.ofSeconds(1)),
+                new ExpedientesProperties.Estado(Duration.ofSeconds(1), Duration.ofSeconds(1)),
+                new ExpedientesProperties.Identidad("grpc-web", null, null, Duration.ofSeconds(1),
+                        Duration.ofSeconds(1))));
     }
 
     @Test
