@@ -126,7 +126,7 @@ message GetVerificationKeysRequest {}
 message VerificationKey {
   // JWT "kid" header value.
   string key_id = 1;
-  // JWT algorithm. Always "ES256".
+  // Signature algorithm. Always "Ed25519" (JWT "alg": "EdDSA").
   string algorithm = 2;
   // Public key in SubjectPublicKeyInfo DER form.
   bytes public_key_spki = 3;
