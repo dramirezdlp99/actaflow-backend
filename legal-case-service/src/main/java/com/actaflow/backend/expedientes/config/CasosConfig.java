@@ -7,8 +7,10 @@ import javax.sql.DataSource;
 
 import com.actaflow.backend.expedientes.aplicacion.ServicioCasos;
 import com.actaflow.backend.expedientes.aplicacion.ServicioParticipantes;
+import com.actaflow.backend.expedientes.aplicacion.ServicioPlantillas;
 import com.actaflow.backend.expedientes.grpc.ServicioCasosGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioParticipantesGrpc;
+import com.actaflow.backend.expedientes.grpc.ServicioPlantillasGrpc;
 import com.actaflow.backend.expedientes.seguridad.ClavesIdentidad;
 import com.actaflow.backend.expedientes.seguridad.InterceptorSesion;
 import com.actaflow.backend.plataforma.grpc.ClienteGrpc;
@@ -24,8 +26,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Expedientes y participantes. Cada servicio del contrato exige, ademas de la firma HMAC del BFF,
- * el token de acceso de la persona, verificado localmente con la clave publica de identity.
+ * Expedientes, participantes y plantillas. Cada servicio del contrato exige, ademas de la firma HMAC
+ * del BFF, el token de acceso de la persona, verificado localmente con la clave publica de identity.
+ * La unica excepcion es la biblioteca publicada de plantillas, que es publica.
  */
 @Configuration
 public class CasosConfig {
@@ -68,6 +71,13 @@ public class CasosConfig {
     @Bean
     public BindableService servicioParticipantesGrpc(Bd bd, Clock reloj, InterceptorSesion sesion) {
         return conSesion(new ServicioParticipantesGrpc(new ServicioParticipantes(bd, reloj)), sesion);
+    }
+
+    /** Plantillas: la lectura de la biblioteca publicada no exige sesion. */
+    @Bean
+    public BindableService servicioPlantillasGrpc(Bd bd, Clock reloj, ClavesIdentidad claves) {
+        InterceptorSesion sesion = new InterceptorSesion(claves, reloj, ServicioPlantillasGrpc.PUBLICOS);
+        return conSesion(new ServicioPlantillasGrpc(new ServicioPlantillas(bd, reloj)), sesion);
     }
 
     static BindableService conSesion(BindableService servicio, InterceptorSesion sesion) {
