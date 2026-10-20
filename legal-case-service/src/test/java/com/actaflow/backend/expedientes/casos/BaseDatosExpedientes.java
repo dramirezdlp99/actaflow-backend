@@ -9,6 +9,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
+import java.util.List;
 import java.util.logging.Logger;
 
 import javax.sql.DataSource;
@@ -20,6 +21,8 @@ import javax.sql.DataSource;
 final class BaseDatosExpedientes implements DataSource {
 
     static final String ESQUEMA = "legal_case_prueba";
+    private static final List<String> MIGRACIONES = List.of("V3__expedientes_y_participantes.sql",
+            "V4__plantillas.sql");
 
     private final String url = entorno("ACTAFLOW_TEST_DB_URL", "jdbc:postgresql://localhost:5432/actaflow_test");
     private final String usuario = entorno("ACTAFLOW_TEST_DB_USERNAME", "actaflow_test");
@@ -31,15 +34,18 @@ final class BaseDatosExpedientes implements DataSource {
     }
 
     BaseDatosExpedientes recrear() {
-        try (Connection c = DriverManager.getConnection(url, usuario, clave); Statement s = c.createStatement();
-             InputStream v3 = getClass().getResourceAsStream("/db/migration/V3__expedientes_y_participantes.sql")) {
-            if (v3 == null) {
-                throw new IllegalStateException("No se encontro la migracion V3 en el classpath");
-            }
+        try (Connection c = DriverManager.getConnection(url, usuario, clave); Statement s = c.createStatement()) {
             s.execute("drop schema if exists " + ESQUEMA + " cascade");
             s.execute("create schema " + ESQUEMA);
             s.execute("set search_path to " + ESQUEMA);
-            s.execute(new String(v3.readAllBytes(), StandardCharsets.UTF_8));
+            for (String migracion : MIGRACIONES) {
+                try (InputStream sql = getClass().getResourceAsStream("/db/migration/" + migracion)) {
+                    if (sql == null) {
+                        throw new IllegalStateException("No se encontro la migracion " + migracion);
+                    }
+                    s.execute(new String(sql.readAllBytes(), StandardCharsets.UTF_8));
+                }
+            }
             return this;
         } catch (SQLException | IOException e) {
             throw new IllegalStateException("No se pudo preparar la base de pruebas", e);
