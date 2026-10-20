@@ -31,13 +31,22 @@ service TemplateService {
   rpc ValidateTemplate(ValidateTemplateRequest) returns (ValidateTemplateResponse);
   // Renders template source with example data, to preview it. Admins only.
   rpc PreviewTemplate(PreviewTemplateRequest) returns (PreviewTemplateResponse);
-  // Saves a new draft version of a template (creating the template if needed). Admins only.
-  // Errors: INVALID_ARGUMENT with reason TEMPLATE_SYNTAX_ERROR and the diagnostics.
+  // Saves a draft of a template (creating the template if needed). Admins only. If the newest
+  // version is already a draft it is replaced; otherwise a new draft version is added.
+  // Errors: INVALID_ARGUMENT with an ErrorReason TEMPLATE_SYNTAX_ERROR and a TemplateDiagnostics
+  // detail; ALREADY_EXISTS (slug taken); PERMISSION_DENIED (template of another organization).
   rpc SaveTemplateDraft(SaveTemplateDraftRequest) returns (SaveTemplateDraftResponse);
-  // Publishes a draft version. Admins only. Triggers ISR revalidation in the frontend.
+  // Publishes a draft version; the previously published one becomes SUPERSEDED. Admins only.
+  // The frontend revalidates the ISR pages after it. Errors: FAILED_PRECONDITION (not a draft).
   rpc PublishTemplate(PublishTemplateRequest) returns (PublishTemplateResponse);
-  // Lists every version of a template, drafts included. Admins only.
+  // Lists every version of a template, drafts included. Admins of the owning organization only.
   rpc ListTemplateVersions(ListTemplateVersionsRequest) returns (ListTemplateVersionsResponse);
+  // Lists the templates of the caller's organization (newest version of each, drafts included,
+  // source omitted), so unpublished drafts can be found again. Admins only. Added in v0.3.0.
+  rpc ListOrganizationTemplates(ListOrganizationTemplatesRequest) returns (ListOrganizationTemplatesResponse);
+  // Returns one version of a template with its source, drafts included, so the editor can reopen a
+  // draft. Admins of the owning organization only. Added in v0.3.0.
+  rpc GetTemplateVersion(GetTemplateVersionRequest) returns (GetTemplateVersionResponse);
 }
 
 // Kind of document a template produces.
@@ -157,6 +166,12 @@ message TemplateDiagnostic {
   int32 column = 3;
   // Explanation in Spanish, for example "Falta {% fin %} para el bloque abierto en la línea 12".
   string message = 4;
+}
+
+// Error detail of SaveTemplateDraft when the source has errors (in grpc-status-details-bin).
+message TemplateDiagnostics {
+  // Every problem found, errors and warnings.
+  repeated TemplateDiagnostic diagnostics = 1;
 }
 
 // Severity of a diagnostic.
@@ -325,4 +340,32 @@ message ListTemplateVersionsRequest {
 message ListTemplateVersionsResponse {
   // Versions, newest first, without source.
   repeated Template versions = 1;
+}
+
+// Request for ListOrganizationTemplates.
+message ListOrganizationTemplatesRequest {
+  // Paging.
+  actaflow.common.v1.PageRequest page = 1 [(buf.validate.field).required = true];
+}
+
+// Response of ListOrganizationTemplates.
+message ListOrganizationTemplatesResponse {
+  // Newest version of each template of the organization, most recently saved first, without source.
+  repeated Template templates = 1;
+  // Paging.
+  actaflow.common.v1.PageInfo page_info = 2;
+}
+
+// Request for GetTemplateVersion.
+message GetTemplateVersionRequest {
+  // Template identifier.
+  string template_id = 1 [(buf.validate.field).string.uuid = true];
+  // Version number.
+  int32 version = 2 [(buf.validate.field).int32.gte = 1];
+}
+
+// Response of GetTemplateVersion.
+message GetTemplateVersionResponse {
+  // The version, with source.
+  Template template = 1;
 }
