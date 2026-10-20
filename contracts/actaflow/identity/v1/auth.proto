@@ -14,7 +14,7 @@ option java_package = "com.actaflow.contracts.identity.v1";
 // Zero-knowledge authentication with mandatory TOTP second factor.
 //
 // The password never leaves the browser. From it the browser derives, with PBKDF2-SHA-256:
-//   * an auth verifier, sent to the server and stored again hashed with Argon2id;
+//   * an auth verifier, sent to the server and stored only as an HMAC-SHA-256 with a server secret;
 //   * a separate key-encryption key that unlocks the user's private key kit locally.
 // Because the server only sees the verifier, it cannot decrypt anything.
 //
@@ -25,10 +25,10 @@ service AuthService {
   // deterministic fake parameters, so the answer never reveals whether an account exists.
   rpc GetLoginParameters(GetLoginParametersRequest) returns (GetLoginParametersResponse);
   // Creates an account from an invitation and starts the mandatory TOTP enrollment.
-  // Errors: NOT_FOUND (invalid or expired invitation), ALREADY_EXISTS (email taken).
+  // Errors: FAILED_PRECONDITION (invalid, used or expired invitation), ALREADY_EXISTS (email taken).
   rpc Register(RegisterRequest) returns (RegisterResponse);
   // Confirms TOTP enrollment with a first code. Returns the one-time recovery codes and
-  // the first session. Errors: INVALID_ARGUMENT with reason TOTP_CODE_INVALID.
+  // the first session. Errors: UNAUTHENTICATED (wrong code), NOT_FOUND (unknown enrollment).
   rpc ConfirmTotpEnrollment(ConfirmTotpEnrollmentRequest) returns (ConfirmTotpEnrollmentResponse);
   // First login step: checks the auth verifier and opens a short second-factor challenge.
   // Errors: UNAUTHENTICATED (wrong credentials, always the same message),
@@ -65,13 +65,13 @@ message PrivateKeyKit {
 
 // An authenticated session. Only the BFF ever sees the tokens.
 message Session {
-  // Short-lived access token (ES256 JWT, 10 minutes) for the other services.
+  // Short-lived access token (EdDSA Ed25519 JWT, 15 minutes) for the other services.
   string access_token = 1;
   // When the access token expires.
   google.protobuf.Timestamp access_token_expires_at = 2;
   // Opaque refresh token, single use, rotated on every refresh.
   string refresh_token = 3;
-  // When the refresh token expires (sliding, 12 hours).
+  // When the refresh token expires (sliding, 30 days).
   google.protobuf.Timestamp refresh_token_expires_at = 4;
   // The signed-in account.
   Account account = 5;
