@@ -3,6 +3,7 @@ package com.actaflow.backend.expedientes.seguridad;
 import java.time.Clock;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 import com.actaflow.backend.plataforma.grpc.Metadatos;
 import com.actaflow.backend.plataforma.seguridad.TokenAcceso;
@@ -19,6 +20,9 @@ import io.grpc.Status;
  * Exige un token de acceso valido ({@code authorization: Bearer ...}) y deja al usuario en el
  * contexto. Se verifica LOCALMENTE con la clave publica de identity: no hay una llamada a identity
  * por cada peticion.
+ *
+ * <p>Los metodos marcados como publicos (la biblioteca de plantillas) aceptan llamadas sin token:
+ * siguen exigiendo la firma HMAC del BFF, pero no una sesion.
  */
 public final class InterceptorSesion implements ServerInterceptor {
 
@@ -28,16 +32,26 @@ public final class InterceptorSesion implements ServerInterceptor {
 
     private final ClavesIdentidad claves;
     private final Clock reloj;
+    private final Set<String> publicos;
 
     public InterceptorSesion(ClavesIdentidad claves, Clock reloj) {
+        this(claves, reloj, Set.of());
+    }
+
+    /** {@code publicos}: nombres completos de los metodos que no exigen sesion. */
+    public InterceptorSesion(ClavesIdentidad claves, Clock reloj, Set<String> publicos) {
         this.claves = claves;
         this.reloj = reloj;
+        this.publicos = Set.copyOf(publicos);
     }
 
     @Override
     public <Q, R> ServerCall.Listener<Q> interceptCall(ServerCall<Q, R> llamada, Metadata metadatos,
                                                        ServerCallHandler<Q, R> siguiente) {
         Optional<Usuario> usuario = usuario(metadatos.get(Metadatos.AUTORIZACION));
+        if (usuario.isEmpty() && publicos.contains(llamada.getMethodDescriptor().getFullMethodName())) {
+            return siguiente.startCall(llamada, metadatos);
+        }
         if (usuario.isEmpty()) {
             llamada.close(Status.UNAUTHENTICATED.withDescription("Sesion vencida o no valida"), new Metadata());
             return new ServerCall.Listener<>() {
