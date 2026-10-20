@@ -10,6 +10,7 @@ import com.actaflow.contracts.common.v1.PageRequest;
 import com.actaflow.contracts.crypto.v1.CipherSuite;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
 import com.actaflow.contracts.crypto.v1.WrappedKey;
+import com.actaflow.contracts.templates.v1.TemplateValue;
 import com.google.protobuf.ProtocolMessageEnum;
 
 /**
@@ -22,6 +23,9 @@ final class Reglas {
             "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
     private static final Pattern CORREO = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
     static final Pattern RADICADO = Pattern.compile("^[A-Z0-9][A-Z0-9-]{2,39}$");
+    static final Pattern SLUG = Pattern.compile("^[a-z0-9]+(-[a-z0-9]+)*$");
+    private static final Pattern MONEDA = Pattern.compile("^[A-Z]{3}$");
+    private static final int MAX_PROFUNDIDAD_VALOR = 16;
     private static final int MAX_CIFRADO = 5_000_000;
 
     private final List<Violacion> violaciones = new ArrayList<>();
@@ -114,6 +118,59 @@ final class Reglas {
         cumple(campo + ".nonce", "bytes.len", clave.getNonce().size() == 12, "value length must be 12 bytes");
         return cumple(campo + ".wrapped_key", "bytes.len", clave.getWrappedKey().size() == 48,
                 "value length must be 48 bytes");
+    }
+
+    /** Slug de plantilla: el patron del contrato y, por la columna, a lo sumo 120 caracteres. */
+    Reglas slug(String campo, String valor) {
+        patron(campo, valor, SLUG);
+        return cumple(campo, "string.max_len", valor.length() <= 120, "value length must be at most 120 characters");
+    }
+
+    /** Valores de ejemplo: cada uno con su tipo elegido (oneof requerido), dinero y fechas validos. */
+    Reglas valores(String campo, java.util.Map<String, TemplateValue> valores) {
+        valores.forEach((clave, valor) -> valor(campo + "[\"" + clave + "\"]", valor, 0));
+        return this;
+    }
+
+    private void valor(String campo, TemplateValue v, int profundidad) {
+        if (profundidad > MAX_PROFUNDIDAD_VALOR) {
+            agregar(campo, "template_value.depth", "values can be nested at most " + MAX_PROFUNDIDAD_VALOR
+                    + " levels");
+            return;
+        }
+        switch (v.getKindCase()) {
+            case KIND_NOT_SET -> agregar(campo + ".kind", "required", "exactly one field is required in oneof");
+            case MONEY -> {
+                var m = v.getMoney();
+                cumple(campo + ".money.currency_code", "string.pattern", MONEDA.matcher(m.getCurrencyCode()).matches(),
+                        "value does not match regex pattern `^[A-Z]{3}$`");
+                cumple(campo + ".money.nanos", "int32.gte_lte", m.getNanos() >= -999_999_999
+                        && m.getNanos() <= 999_999_999, "value must be greater than or equal to -999999999 and less"
+                        + " than or equal to 999999999");
+                cumple(campo + ".money", "money.sign", (m.getUnits() >= 0 && m.getNanos() >= 0)
+                        || (m.getUnits() <= 0 && m.getNanos() <= 0), "units and nanos must have the same sign");
+            }
+            case DATE -> {
+                var d = v.getDate();
+                cumple(campo + ".date.year", "int32.gte_lte", d.getYear() >= 1900 && d.getYear() <= 2200,
+                        "value must be greater than or equal to 1900 and less than or equal to 2200");
+                cumple(campo + ".date.month", "int32.gte_lte", d.getMonth() >= 1 && d.getMonth() <= 12,
+                        "value must be greater than or equal to 1 and less than or equal to 12");
+                cumple(campo + ".date.day", "int32.gte_lte", d.getDay() >= 1 && d.getDay() <= 31,
+                        "value must be greater than or equal to 1 and less than or equal to 31");
+            }
+            case OBJECT -> v.getObject().getFieldsMap().forEach((clave, hijo) ->
+                    valor(campo + ".object.fields[\"" + clave + "\"]", hijo, profundidad + 1));
+            case LIST -> {
+                var items = v.getList().getItemsList();
+                for (int i = 0; i < items.size(); i++) {
+                    valor(campo + ".list.items[" + i + "]", items.get(i), profundidad + 1);
+                }
+            }
+            default -> {
+                // Texto, entero y booleano no tienen reglas.
+            }
+        }
     }
 
     void verificar() {
