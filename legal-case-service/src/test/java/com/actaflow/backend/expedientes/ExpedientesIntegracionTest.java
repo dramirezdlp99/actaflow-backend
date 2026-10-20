@@ -23,6 +23,9 @@ import com.actaflow.contracts.common.v1.PageRequest;
 import com.actaflow.contracts.crypto.v1.CipherSuite;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
 import com.actaflow.contracts.crypto.v1.WrappedKey;
+import com.actaflow.contracts.templates.v1.ListPublishedTemplatesRequest;
+import com.actaflow.contracts.templates.v1.TemplateServiceGrpc;
+import com.actaflow.contracts.templates.v1.ValidateTemplateRequest;
 import com.google.protobuf.ByteString;
 
 import io.grpc.Channel;
@@ -44,7 +47,7 @@ import org.springframework.test.context.DynamicPropertySource;
 /**
  * Arranque completo de expedientes: el BFF llama por gRPC-Web y por gRPC nativo con su firma HMAC y
  * el token de la persona; el servicio pide la clave publica a una identidad falsa y guarda en
- * PostgreSQL real (migracion V3).
+ * PostgreSQL real (migraciones de Flyway, con las plantillas del sistema de V4).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
@@ -123,6 +126,22 @@ class ExpedientesIntegracionTest {
                     () -> CaseServiceGrpc.newBlockingStub(como(web.canal(), "eyJhbGciOiJub25lIn0.e30."))
                             .listCases(listar));
             assertEquals(Status.Code.UNAUTHENTICATED, forjado.getStatus().getCode());
+        }
+    }
+
+    @Test
+    void laBibliotecaDePlantillasSeLeeSinSesionPorAmbosTransportes() {
+        ListPublishedTemplatesRequest listar = ListPublishedTemplatesRequest.newBuilder()
+                .setPage(PageRequest.newBuilder().setPageSize(10)).build();
+        try (ClienteGrpc web = bff("grpc-web"); ClienteGrpc nativo = bff("grpc")) {
+            assertEquals(3, TemplateServiceGrpc.newBlockingStub(web.canal()).listPublishedTemplates(listar)
+                    .getTemplatesCount());
+            assertEquals(3, TemplateServiceGrpc.newBlockingStub(nativo.canal()).listPublishedTemplates(listar)
+                    .getTemplatesCount());
+            StatusRuntimeException sinToken = assertThrows(StatusRuntimeException.class,
+                    () -> TemplateServiceGrpc.newBlockingStub(web.canal()).validateTemplate(
+                            ValidateTemplateRequest.newBuilder().setSource("x").build()));
+            assertEquals(Status.Code.UNAUTHENTICATED, sinToken.getStatus().getCode());
         }
     }
 }
