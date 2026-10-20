@@ -45,7 +45,7 @@ legal-case-service/      microservicio de expedientes (migrado del backend monol
 Actualizar a otra versión del contrato:
 
 ```powershell
-node scripts/contracts.mjs sync v0.2.0     # descarga, copia y reescribe el lock
+node scripts/contracts.mjs sync v0.3.0     # descarga, copia y reescribe el lock
 node scripts/contracts.mjs check           # verifica los sha256
 .\mvnw verify
 ```
@@ -164,6 +164,7 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 | `actaflow.identity.v1.TokenVerificationService` | Clave publica Ed25519 que firma los tokens (**pública**, sin firma HMAC, como un JWKS) | — |
 | `actaflow.cases.v1.CaseService` | — | Crear, ver, listar y editar expedientes; estados y línea de tiempo |
 | `actaflow.cases.v1.ParticipantService` | — | Participantes, invitaciones por correo y reparto de la clave del caso |
+| `actaflow.templates.v1.TemplateService` | — | Biblioteca de plantillas (**lectura pública**, sin sesión), editor, vista previa, versiones y publicación |
 
 ## Identidad (bloque BE-2)
 
@@ -202,3 +203,28 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
   conciliador; las partes llevan lado y calidad (regla CEL del contrato).
 - **Persistencia:** migración `V3` en el esquema `legal_case` (`caso`, `participante`,
   `evento_caso`, `idempotencia`).
+
+## Plantillas (bloque BE-5)
+
+- **Biblioteca pública:** `ListPublishedTemplates` y `GetPublishedTemplate` piden la firma HMAC del
+  BFF pero no una sesión. Así el frontend las genera con ISR. Las plantillas no llevan datos de
+  casos, por eso van en claro.
+- **Solo administradores** validan, previsualizan, guardan borradores y publican, y solo la
+  organización autora edita sus plantillas. Las del sistema (migración `V4`, sin organización) no
+  las edita nadie: sirven de base para una propia.
+- **Versiones:** guardar reemplaza el borrador más nuevo o abre uno nuevo si la última versión ya
+  está publicada. Publicar deja la anterior como `SUPERSEDED` (a lo sumo una publicada por
+  plantilla, garantizado por un índice único parcial). `ListOrganizationTemplates` y
+  `GetTemplateVersion` (contratos v0.3.0) dejan encontrar y volver a abrir los borradores.
+- **Lenguaje** (`plantillas/Lenguaje`): `{{ ruta | formato }}`, `{% si ... %}` / `{% sino %}` /
+  `{% fin %}`, `{% para cada x en lista %}` y comentarios `{# #}`. Se reportan diagnósticos en
+  español con línea y columna. Una fuente con errores no se guarda (`INVALID_ARGUMENT` con
+  `TEMPLATE_SYNTAX_ERROR` y el detalle `TemplateDiagnostics`). Las variables, su tipo, su
+  etiqueta y su origen se deducen del uso.
+- **Formatos:** `moneda` ($1.500.000), `moneda_en_letras` (un millón quinientos mil pesos
+  ($1.500.000)), `fecha`, `fecha_en_letras`, `numero`, `numero_en_letras`, `mayusculas` y
+  `minusculas`.
+- **HTML seguro** (`plantillas/Documento`): todo el texto y los valores se escapan, y solo salen
+  `h2`, `h3`, `p`, `br`, `strong`, `span.valor` y `mark.falta` (un valor que falta se ve como
+  `[ruta]`). La salida tiene un tope de tamaño, para que una lista enorme en bucles anidados no
+  agote la memoria.
