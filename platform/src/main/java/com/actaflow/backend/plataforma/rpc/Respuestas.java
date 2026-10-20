@@ -3,6 +3,7 @@ package com.actaflow.backend.plataforma.rpc;
 import java.lang.System.Logger.Level;
 import java.util.function.Supplier;
 
+import com.actaflow.contracts.common.v1.ErrorReason;
 import com.actaflow.contracts.common.v1.FieldViolation;
 import com.actaflow.contracts.common.v1.FieldViolations;
 import com.google.protobuf.Any;
@@ -14,7 +15,8 @@ import io.grpc.stub.StreamObserver;
 
 /**
  * Ejecuta un caso de uso y traduce sus fallos a codigos gRPC. Las violaciones de campo viajan como
- * detalle tipado {@code actaflow.common.v1.FieldViolations} en {@code grpc-status-details-bin}.
+ * detalle tipado {@code actaflow.common.v1.FieldViolations} en {@code grpc-status-details-bin}, junto a
+ * la razon ({@code ErrorReason}) y el detalle propio del fallo cuando los hay.
  */
 public final class Respuestas {
 
@@ -56,6 +58,12 @@ public final class Respuestas {
             fallo.violaciones().forEach(v -> detalles.addViolations(FieldViolation.newBuilder()
                     .setField(v.campo()).setRule(v.regla()).setDescription(v.descripcion())));
             estado.addDetails(Any.pack(detalles.build()));
+        }
+        if (fallo.razon() != null) {
+            estado.addDetails(Any.pack(ErrorReason.newBuilder().setReason(fallo.razon()).build()));
+        }
+        if (fallo.detalle() != null) {
+            estado.addDetails(Any.pack(fallo.detalle()));
         }
         return StatusProto.toStatusRuntimeException(estado.build());
     }
