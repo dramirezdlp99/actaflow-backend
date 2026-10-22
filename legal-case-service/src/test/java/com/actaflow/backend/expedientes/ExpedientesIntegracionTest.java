@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 import com.actaflow.backend.expedientes.soporte.ClienteBff;
@@ -24,6 +25,9 @@ import com.actaflow.contracts.crypto.v1.CipherSuite;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
 import com.actaflow.contracts.crypto.v1.WrappedKey;
 import com.actaflow.contracts.templates.v1.ListPublishedTemplatesRequest;
+import com.actaflow.contracts.hearings.v1.GetHearingRequest;
+import com.actaflow.contracts.hearings.v1.HearingServiceGrpc;
+import com.actaflow.contracts.hearings.v1.WatchHearingEventsRequest;
 import com.actaflow.contracts.templates.v1.TemplateServiceGrpc;
 import com.actaflow.contracts.templates.v1.ValidateTemplateRequest;
 import com.google.protobuf.ByteString;
@@ -142,6 +146,23 @@ class ExpedientesIntegracionTest {
                     () -> TemplateServiceGrpc.newBlockingStub(web.canal()).validateTemplate(
                             ValidateTemplateRequest.newBuilder().setSource("x").build()));
             assertEquals(Status.Code.UNAUTHENTICATED, sinToken.getStatus().getCode());
+        }
+    }
+
+    @Test
+    void lasAudienciasEstanPublicadasYExigenSesionPorAmbosTransportes() {
+        GetHearingRequest leer = GetHearingRequest.newBuilder().setHearingId(UUID.randomUUID().toString()).build();
+        try (ClienteGrpc web = bff("grpc-web"); ClienteGrpc nativo = bff("grpc")) {
+            for (ClienteGrpc cliente : List.of(web, nativo)) {
+                StatusRuntimeException sinToken = assertThrows(StatusRuntimeException.class,
+                        () -> HearingServiceGrpc.newBlockingStub(cliente.canal()).getHearing(leer));
+                assertEquals(Status.Code.UNAUTHENTICATED, sinToken.getStatus().getCode());
+                StatusRuntimeException flujo = assertThrows(StatusRuntimeException.class,
+                        () -> HearingServiceGrpc.newBlockingStub(cliente.canal()).watchHearingEvents(
+                                WatchHearingEventsRequest.newBuilder().setHearingId(leer.getHearingId()).build())
+                                .hasNext());
+                assertEquals(Status.Code.UNAUTHENTICATED, flujo.getStatus().getCode(), "streaming del servidor");
+            }
         }
     }
 }
