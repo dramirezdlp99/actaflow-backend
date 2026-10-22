@@ -166,6 +166,7 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 | `actaflow.cases.v1.ParticipantService` | — | Participantes, invitaciones por correo y reparto de la clave del caso |
 | `actaflow.templates.v1.TemplateService` | — | Biblioteca de plantillas (**lectura pública**, sin sesión), editor, vista previa, versiones y publicación |
 | `actaflow.hearings.v1.HearingService` | — | Audiencias, segmentos de audio sellados, transcripción y extracción de entidades (cola asíncrona), eventos en vivo |
+| `actaflow.crypto.v1.ProcessorKeyService` | — | Clave pública del motor de IA (pedida al motor y guardada 10 min) para sellarle el audio |
 
 ## Identidad (bloque BE-2)
 
@@ -252,6 +253,8 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
   otra persona guardó antes, responde `ABORTED`.
 - **Eventos en vivo** (`WatchHearingEvents`, server streaming por ambos transportes): cada cambio de
   un segmento o una extracción, y el fin de la audiencia, queda en `evento_audiencia` con un número
-  creciente. El flujo los consulta cada segundo, manda un latido cada 20 s sin cambios y se cierra
-  al terminar la audiencia o a los 5 minutos; el cliente se reconecta con el último número que
-  recibió y no pierde nada.
+  creciente. El flujo los consulta cada segundo, manda un latido cada 15 s sin cambios y se cierra
+  al terminar la audiencia o a los 50 s (la pasarela gRPC-Web corta toda llamada a los 60 s); el
+  cliente se reconecta con el último número que recibió y no pierde nada.
+- **Clave del motor** (`ProcessorKeyService`, con sesión): el BFF no habla con el motor, así que
+  legal-case le pide su clave pública y la guarda 10 minutos. Con ella el navegador sella el audio.
