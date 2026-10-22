@@ -9,6 +9,7 @@ import com.actaflow.backend.plataforma.rpc.FalloRpc.Violacion;
 import com.actaflow.contracts.common.v1.PageRequest;
 import com.actaflow.contracts.crypto.v1.CipherSuite;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
+import com.actaflow.contracts.crypto.v1.SealedEnvelope;
 import com.actaflow.contracts.crypto.v1.WrappedKey;
 import com.actaflow.contracts.templates.v1.TemplateValue;
 import com.google.protobuf.ProtocolMessageEnum;
@@ -118,6 +119,16 @@ final class Reglas {
         cumple(campo + ".nonce", "bytes.len", clave.getNonce().size() == 12, "value length must be 12 bytes");
         return cumple(campo + ".wrapped_key", "bytes.len", clave.getWrappedKey().size() == 48,
                 "value length must be 48 bytes");
+    }
+
+    /** Sobre sellado para el motor: el contenido, K envuelta para el motor y K cifrada con la clave del caso. */
+    Reglas sobre(String campo, boolean presente, SealedEnvelope sobre) {
+        if (!presente) {
+            return requerido(campo, false);
+        }
+        blob(campo + ".payload", sobre.hasPayload(), sobre.getPayload());
+        claveEnvuelta(campo + ".processor_key", sobre.hasProcessorKey(), sobre.getProcessorKey());
+        return blob(campo + ".content_key_for_case", sobre.hasContentKeyForCase(), sobre.getContentKeyForCase());
     }
 
     /** Slug de plantilla: el patron del contrato y, por la columna, a lo sumo 120 caracteres. */
