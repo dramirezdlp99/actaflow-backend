@@ -15,14 +15,14 @@ import java.util.logging.Logger;
 import javax.sql.DataSource;
 
 /**
- * Base de pruebas sin Spring: recrea el esquema legal_case_prueba y aplica la migracion V3 tal cual
- * (V1 y V2 tocan el esquema legal_case por nombre y no hacen falta aqui).
+ * Base de pruebas sin Spring: recrea el esquema legal_case_prueba y aplica las migraciones tal cual
+ * (V2 solo limpia el esquema public y no hace falta aqui).
  */
 final class BaseDatosExpedientes implements DataSource {
 
     static final String ESQUEMA = "legal_case_prueba";
-    private static final List<String> MIGRACIONES = List.of("V3__expedientes_y_participantes.sql",
-            "V4__plantillas.sql");
+    private static final List<String> MIGRACIONES = List.of("V1__cola_de_trabajos.sql",
+            "V3__expedientes_y_participantes.sql", "V4__plantillas.sql", "V5__audiencias.sql");
 
     private final String url = entorno("ACTAFLOW_TEST_DB_URL", "jdbc:postgresql://localhost:5432/actaflow_test");
     private final String usuario = entorno("ACTAFLOW_TEST_DB_USERNAME", "actaflow_test");
