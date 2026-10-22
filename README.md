@@ -165,6 +165,7 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 | `actaflow.cases.v1.CaseService` | — | Crear, ver, listar y editar expedientes; estados y línea de tiempo |
 | `actaflow.cases.v1.ParticipantService` | — | Participantes, invitaciones por correo y reparto de la clave del caso |
 | `actaflow.templates.v1.TemplateService` | — | Biblioteca de plantillas (**lectura pública**, sin sesión), editor, vista previa, versiones y publicación |
+| `actaflow.hearings.v1.HearingService` | — | Audiencias, segmentos de audio sellados, transcripción y extracción de entidades (cola asíncrona), eventos en vivo |
 
 ## Identidad (bloque BE-2)
 
@@ -228,3 +229,29 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
   `h2`, `h3`, `p`, `br`, `strong`, `span.valor` y `mark.falta` (un valor que falta se ve como
   `[ruta]`). La salida tiene un tope de tamaño, para que una lista enorme en bucles anidados no
   agote la memoria.
+
+## Audiencias (bloque BE-6)
+
+- **El backend no puede leer nada de la audiencia.** El navegador sella cada intervención (hasta
+  30 s) para el motor de IA (`SealedEnvelope`): el audio va cifrado con una clave de contenido K,
+  K va envuelta para la clave pública del motor y, aparte, cifrada con la clave del caso. Legal-case
+  guarda y reenvía esos bytes; el motor devuelve la transcripción cifrada con K, que solo abren los
+  participantes.
+- **Solo el conciliador** inicia y termina la audiencia (a lo sumo una en curso por expediente,
+  garantizado por un índice único parcial). Graban, piden la extracción y revisan las entidades el
+  conciliador y los asistentes; las partes ven todo.
+- **Idempotencia:** un segmento se identifica por (audiencia, número de orden). Reenviar el mismo
+  segmento devuelve el guardado; otro audio con el mismo número da `ALREADY_EXISTS`.
+- **Cola de trabajos** (`aplicacion/ColaTrabajos`, tabla `trabajo` de `V1`): un hilo revisa la cola
+  cada 2 s y toma los trabajos con `FOR UPDATE SKIP LOCKED`. La llamada al motor va fuera de la
+  transacción, con un plazo de 180 s (en Render Free el motor puede estar despertando). Los errores
+  pasajeros (`UNAVAILABLE`, `DEADLINE_EXCEEDED`...) se reintentan con espera creciente (10 s, 20 s,
+  40 s...) hasta 5 intentos; los definitivos (`INVALID_ARGUMENT`, sobre ilegible) marcan el segmento
+  como `FAILED`. **El audio sellado se borra** en cuanto hay transcripción o fallo definitivo.
+- **Revisión de entidades:** `ConfirmEntities` usa concurrencia optimista (`expected_revision`); si
+  otra persona guardó antes, responde `ABORTED`.
+- **Eventos en vivo** (`WatchHearingEvents`, server streaming por ambos transportes): cada cambio de
+  un segmento o una extracción, y el fin de la audiencia, queda en `evento_audiencia` con un número
+  creciente. El flujo los consulta cada segundo, manda un latido cada 20 s sin cambios y se cierra
+  al terminar la audiencia o a los 5 minutos; el cliente se reconecta con el último número que
+  recibió y no pierde nada.
