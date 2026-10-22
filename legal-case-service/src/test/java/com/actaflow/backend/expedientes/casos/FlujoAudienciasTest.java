@@ -102,6 +102,7 @@ class FlujoAudienciasTest {
 
     private static final String SECRETO_BFF = "secreto-de-prueba-publico-solo-para-tests-0123456789";
     private static final UUID ORG = UUID.randomUUID();
+    private static final Duration FLUJO_MAXIMO = Duration.ofSeconds(3);
 
     private final KeyPair claves = par();
     private final String kid = TokenAcceso.idDeClave(claves.getPublic());
@@ -188,7 +189,7 @@ class FlujoAudienciasTest {
                 conSesion(new ServicioCasosGrpc(new ServicioCasos(bd, reloj)), sesion),
                 conSesion(new ServicioParticipantesGrpc(new ServicioParticipantes(bd, reloj)), sesion),
                 conSesion(new ServicioAudienciasGrpc(new ServicioAudiencias(bd, reloj), planificador, reloj,
-                        Duration.ofMillis(30), Duration.ofMillis(200), Duration.ofSeconds(20)), sesion));
+                        Duration.ofMillis(30), Duration.ofMillis(200), FLUJO_MAXIMO), sesion));
         FirmaHmac firma = new FirmaHmac(SECRETO_BFF, 300, reloj);
         servidor = new ServidorGrpc(servicios, firma, -1, 1 << 20);
         servidor.iniciar();
@@ -519,5 +520,20 @@ class FlujoAudienciasTest {
             ultimo = flujo.next();
         }
         assertTrue(ultimo.hasHearingEnded(), "el flujo cierra despues del fin de la audiencia");
+    }
+
+    @Test
+    void elFlujoSeCierraSoloAlTiempoMaximoAunqueLaAudienciaSigaEnCurso() {
+        Escenario e = escenario();
+        Hearing h = iniciar(alicia, e.caso().getId());
+        long inicio = System.nanoTime();
+        List<WatchHearingEventsResponse> eventos = new ArrayList<>();
+        audiencias(carla).watchHearingEvents(WatchHearingEventsRequest.newBuilder().setHearingId(h.getId()).build())
+                .forEachRemaining(eventos::add);
+        Duration duro = Duration.ofNanos(System.nanoTime() - inicio);
+        assertTrue(duro.compareTo(FLUJO_MAXIMO) >= 0 && duro.compareTo(FLUJO_MAXIMO.multipliedBy(3)) < 0,
+                "cierra al cumplir el maximo (la pasarela gRPC-Web corta a los 60 s): " + duro);
+        assertFalse(eventos.isEmpty());
+        assertTrue(eventos.stream().allMatch(WatchHearingEventsResponse::hasHeartbeat), "solo latidos");
     }
 }
