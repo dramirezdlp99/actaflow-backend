@@ -138,6 +138,35 @@ message StreamTranscriptionResponse {
   bool final = 2;
 }
 
+// PDF rendering of final minutes, as a sealed processor (the "document worker" of
+// actaflow.minutes.v1). The engine opens the final content in memory, renders the PDF and returns
+// it encrypted with the same content key (AAD purpose "minute-pdf", resource = minute id), plus
+// its SHA-256 so legal-case can seal it without seeing it.
+service DocumentService {
+  // Renders one final minute.
+  rpc RenderMinutePdf(RenderMinutePdfRequest) returns (RenderMinutePdfResponse);
+}
+
+// Request for RenderMinutePdf.
+message RenderMinutePdfRequest {
+  // Case identifier (part of the AAD).
+  string case_id = 1 [(buf.validate.field).string.uuid = true];
+  // Minute identifier (part of the AAD).
+  string minute_id = 2 [(buf.validate.field).string.uuid = true];
+  // actaflow.minutes.v1.FinalContent sealed for the engine.
+  actaflow.crypto.v1.SealedEnvelope final_content = 3 [(buf.validate.field).required = true];
+}
+
+// Response of RenderMinutePdf.
+message RenderMinutePdfResponse {
+  // The PDF encrypted with the content key (plaintext_type = "application/pdf").
+  actaflow.crypto.v1.EncryptedBlob pdf = 1;
+  // SHA-256 of the plaintext PDF, hex.
+  string sha256_hex = 2;
+  // Number of pages.
+  int32 page_count = 3;
+}
+
 // Legal entity extraction from a transcript.
 service ExtractionService {
   // Extracts parties, amounts, deadlines, commitments and penalty clauses.
