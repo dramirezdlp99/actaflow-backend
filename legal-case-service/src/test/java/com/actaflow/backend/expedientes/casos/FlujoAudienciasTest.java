@@ -34,6 +34,7 @@ import com.actaflow.backend.expedientes.aplicacion.ServicioAudiencias;
 import com.actaflow.backend.expedientes.aplicacion.ServicioCasos;
 import com.actaflow.backend.expedientes.aplicacion.ServicioParticipantes;
 import com.actaflow.backend.expedientes.grpc.ServicioAudienciasGrpc;
+import com.actaflow.backend.expedientes.sello.Sellador;
 import com.actaflow.backend.expedientes.grpc.ServicioCasosGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioParticipantesGrpc;
 import com.actaflow.backend.expedientes.seguridad.ClavesIdentidad;
@@ -103,6 +104,7 @@ class FlujoAudienciasTest {
     private static final String SECRETO_BFF = "secreto-de-prueba-publico-solo-para-tests-0123456789";
     private static final UUID ORG = UUID.randomUUID();
     private static final Duration FLUJO_MAXIMO = Duration.ofSeconds(3);
+    private static final String SECRETO_SELLO = "secreto-del-sello-de-prueba-publico-solo-para-tests-01";
 
     private final KeyPair claves = par();
     private final String kid = TokenAcceso.idDeClave(claves.getPublic());
@@ -164,6 +166,11 @@ class FlujoAudienciasTest {
             return siguiente("entidades-" + extraccionId);
         }
 
+        @Override
+        public Renderizado renderizar(String casoId, String actaId, SealedEnvelope contenido) {
+            throw new UnsupportedOperationException("las actas se prueban en FlujoActasTest");
+        }
+
         private EncryptedBlob siguiente(String semilla) {
             Supplier<EncryptedBlob> r = respuestas.poll();
             return r != null ? r.get() : cifrado(semilla);
@@ -194,7 +201,7 @@ class FlujoAudienciasTest {
         servidor = new ServidorGrpc(servicios, firma, -1, 1 << 20);
         servidor.iniciar();
         canal = ClientInterceptors.intercept(servidor.canalEnMemoria(), new InterceptorClienteFirma(firma));
-        cola = new ColaTrabajos(bd, relojCola, motor);
+        cola = new ColaTrabajos(bd, relojCola, motor, new Sellador(SECRETO_SELLO));
     }
 
     @AfterEach
