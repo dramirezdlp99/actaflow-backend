@@ -62,8 +62,56 @@ public final class TokenAcceso {
         return B64.encodeToString(bytes);
     }
 
-    /** Reclamos del token si la firma, el id de clave, el emisor y el vencimiento son validos. */
+    /** Reclamo que solo llevan las pruebas de presencia: un token con el nunca es de acceso. */
+    public static final String RECLAMO_PROPOSITO = "pur";
+
+    /**
+     * Prueba de presencia (AuthService.ConfirmPresence): la persona confirmo un codigo TOTP para un
+     * proposito concreto, por ejemplo aceptar un acta.
+     *
+     * @param cuenta    cuenta que la confirmo (sub)
+     * @param proposito para que sirve (pur)
+     * @param vence     vencimiento (exp)
+     */
+    public record Presencia(UUID cuenta, String proposito, Instant vence) {
+    }
+
+    /**
+     * Reclamos del token si la firma, el id de clave, el emisor y el vencimiento son validos. Una
+     * prueba de presencia (lleva {@code pur}) nunca vale como token de acceso.
+     */
     public static Optional<Reclamos> verificar(String token, Instant ahora, PublicKey clave, String idClave) {
+        return cargaValida(token, ahora, clave, idClave)
+                .filter(carga -> !carga.containsKey(RECLAMO_PROPOSITO))
+                .flatMap(carga -> {
+                    try {
+                        return Optional.of(new Reclamos(UUID.fromString(carga.get("sub")),
+                                UUID.fromString(carga.get("org")), carga.get("role"), carga.getOrDefault("email", ""),
+                                carga.getOrDefault("name", ""),
+                                Instant.ofEpochSecond(Long.parseLong(carga.get("exp")))));
+                    } catch (IllegalArgumentException | NullPointerException e) {
+                        return Optional.empty();
+                    }
+                });
+    }
+
+    /** Prueba de presencia valida (firma, emisor, vencimiento y {@code pur}); un token de acceso no lo es. */
+    public static Optional<Presencia> verificarPresencia(String token, Instant ahora, PublicKey clave,
+                                                         String idClave) {
+        return cargaValida(token, ahora, clave, idClave)
+                .filter(carga -> carga.containsKey(RECLAMO_PROPOSITO) && !carga.containsKey("role"))
+                .flatMap(carga -> {
+                    try {
+                        return Optional.of(new Presencia(UUID.fromString(carga.get("sub")),
+                                carga.get(RECLAMO_PROPOSITO), Instant.ofEpochSecond(Long.parseLong(carga.get("exp")))));
+                    } catch (IllegalArgumentException | NullPointerException e) {
+                        return Optional.empty();
+                    }
+                });
+    }
+
+    private static Optional<Map<String, String>> cargaValida(String token, Instant ahora, PublicKey clave,
+                                                             String idClave) {
         try {
             String[] partes = token == null ? new String[0] : token.split("\\.", -1);
             if (partes.length != 3) {
@@ -84,9 +132,7 @@ public final class TokenAcceso {
             if (!EMISOR.equals(carga.get("iss")) || ahora.getEpochSecond() >= vence) {
                 return Optional.empty();
             }
-            return Optional.of(new Reclamos(UUID.fromString(carga.get("sub")), UUID.fromString(carga.get("org")),
-                    carga.get("role"), carga.getOrDefault("email", ""), carga.getOrDefault("name", ""),
-                    Instant.ofEpochSecond(vence)));
+            return Optional.of(carga);
         } catch (IllegalArgumentException | NullPointerException | GeneralSecurityException e) {
             return Optional.empty();
         }
