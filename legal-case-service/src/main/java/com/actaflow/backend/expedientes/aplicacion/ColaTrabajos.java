@@ -5,10 +5,12 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import com.actaflow.backend.expedientes.sello.Sellador;
 import com.actaflow.backend.plataforma.persistencia.Bd;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
 import com.actaflow.contracts.crypto.v1.SealedEnvelope;
@@ -36,17 +38,25 @@ public final class ColaTrabajos {
     private final Bd bd;
     private final Clock reloj;
     private final MotorIA motor;
+    private final Sellador sellador;
 
-    public ColaTrabajos(Bd bd, Clock reloj, MotorIA motor) {
+    public ColaTrabajos(Bd bd, Clock reloj, MotorIA motor, Sellador sellador) {
         this.bd = bd;
         this.reloj = reloj;
         this.motor = motor;
+        this.sellador = sellador;
     }
 
+    /**
+     * Encola un trabajo una sola vez por recurso. Si ese recurso ya tuvo un trabajo terminado (un acta
+     * que se vuelve a cerrar despues de un fallo), lo reactiva; uno pendiente o en curso no se toca.
+     */
     static void encolar(Connection c, String tipo, UUID recurso, Instant ahora) throws SQLException {
         Bd.ejecutar(c, "insert into trabajo (tipo, clave_idempotencia, disponible_en, creado_en, actualizado_en)"
-                + " values (?, ?, ?, ?, ?) on conflict (tipo, clave_idempotencia) do nothing", tipo, recurso.toString(),
-                ahora, ahora, ahora);
+                + " values (?, ?, ?, ?, ?) on conflict (tipo, clave_idempotencia) do update"
+                + " set estado = 'PENDIENTE', intentos = 0, ultimo_error = null, bloqueado_hasta = null,"
+                + " disponible_en = excluded.disponible_en, actualizado_en = excluded.actualizado_en"
+                + " where trabajo.estado in ('COMPLETADO', 'FALLIDO')", tipo, recurso.toString(), ahora, ahora, ahora);
     }
 
     private record Trabajo(UUID id, String tipo, UUID recurso, int intentos, int maximo) {
@@ -81,6 +91,10 @@ public final class ColaTrabajos {
     }
 
     private void procesar(Trabajo trabajo) {
+        if (ServicioActas.RENDERIZAR.equals(trabajo.tipo())) {
+            renderizarActa(trabajo);
+            return;
+        }
         boolean esTranscripcion = ServicioAudiencias.TRANSCRIBIR.equals(trabajo.tipo());
         String tabla = esTranscripcion ? "segmento_audio" : "extraccion";
         String columnaEntrada = esTranscripcion ? "audio" : "entrada";
@@ -136,6 +150,65 @@ public final class ColaTrabajos {
                     + " = null" + extra + " where id = ?", parametros);
             ServicioAudiencias.eventoAudiencia(c, p.audienciaId(), esTranscripcion ? "SEGMENT" : "EXTRACTION",
                     trabajo.recurso(), fin);
+            return null;
+        });
+        terminarTrabajo(trabajo, "COMPLETADO", null, null);
+    }
+
+    /**
+     * Acta cerrada: el motor genera el PDF (cifrado) y su SHA-256; aqui se firma ese hash y se guarda
+     * todo. Mismos reintentos que la transcripcion; si falla del todo, el acta vuelve a borrador.
+     */
+    private void renderizarActa(Trabajo trabajo) {
+        UUID actaId = trabajo.recurso();
+        record Pendiente(UUID casoId, SealedEnvelope contenido) {
+        }
+        Optional<Pendiente> pendiente = bd.transaccion(c -> ServicioActas.pendiente(c, actaId)
+                .map(sobre -> {
+                    try {
+                        return new Pendiente(ServicioActas.casoDe(c, actaId), sobre);
+                    } catch (SQLException e) {
+                        throw new IllegalStateException(e);
+                    }
+                }));
+        if (pendiente.isEmpty()) {
+            terminarTrabajo(trabajo, "COMPLETADO", null, null);
+            return;
+        }
+        MotorIA.Renderizado pdf;
+        try {
+            pdf = motor.renderizar(pendiente.get().casoId().toString(), actaId.toString(),
+                    pendiente.get().contenido());
+        } catch (StatusRuntimeException e) {
+            Status.Code codigo = e.getStatus().getCode();
+            String error = codigo + ": " + String.valueOf(e.getStatus().getDescription());
+            if (PASAJEROS.contains(codigo) && trabajo.intentos() < trabajo.maximo()) {
+                Duration espera = Duration.ofSeconds(10L << Math.min(trabajo.intentos() - 1, 6));
+                terminarTrabajo(trabajo, "PENDIENTE", error, reloj.instant().plus(espera));
+            } else {
+                bd.transaccion(c -> {
+                    ServicioActas.devolverABorrador(c, actaId, "No se pudo generar el PDF (" + codigo + ")");
+                    return null;
+                });
+                terminarTrabajo(trabajo, "FALLIDO", error, null);
+            }
+            return;
+        }
+        if (!pdf.sha256Hex().matches("^[0-9a-f]{64}$") || !pdf.pdf().hasField(
+                EncryptedBlob.getDescriptor().findFieldByName("ciphertext"))) {
+            bd.transaccion(c -> {
+                ServicioActas.devolverABorrador(c, actaId, "El motor devolvio un PDF sin hash valido");
+                return null;
+            });
+            terminarTrabajo(trabajo, "FALLIDO", "Respuesta del motor invalida", null);
+            return;
+        }
+        Instant ahora = reloj.instant();
+        Sellador.Sello sello = sellador.sellar(HexFormat.of().parseHex(pdf.sha256Hex()), ahora);
+        bd.transaccion(c -> {
+            if (ServicioActas.pendiente(c, actaId).isPresent()) {
+                ServicioActas.guardarSellado(c, actaId, pendiente.get().contenido(), pdf, sello, ahora);
+            }
             return null;
         });
         terminarTrabajo(trabajo, "COMPLETADO", null, null);
