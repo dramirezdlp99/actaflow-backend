@@ -38,6 +38,8 @@ import com.actaflow.contracts.identity.v1.ChangeMemberRoleRequest;
 import com.actaflow.contracts.identity.v1.CompleteSecondFactorRequest;
 import com.actaflow.contracts.identity.v1.ConfirmTotpEnrollmentRequest;
 import com.actaflow.contracts.identity.v1.ConfirmTotpEnrollmentResponse;
+import com.actaflow.contracts.identity.v1.ConfirmPresenceRequest;
+import com.actaflow.contracts.identity.v1.ConfirmPresenceResponse;
 import com.actaflow.contracts.identity.v1.GetCurrentAccountRequest;
 import com.actaflow.contracts.identity.v1.GetLoginParametersRequest;
 import com.actaflow.contracts.identity.v1.GetPublicKeysRequest;
@@ -393,6 +395,57 @@ class FlujoIdentidadTest {
                 () -> AuthServiceGrpc.newBlockingStub(servidor.canalEnMemoria())
                         .getLoginParameters(GetLoginParametersRequest.newBuilder().setEmail(ADMIN).build()));
         assertEquals(Status.Code.UNAUTHENTICATED, sinFirma.getStatus().getCode());
+    }
+
+    @Test
+    void laPruebaDePresenciaExigeUnCodigoNuevoYNuncaSirveComoTokenDeAcceso() throws Exception {
+        RegisterResponse registro = registrar(TOKEN_ARRANQUE, ADMIN, "clave-del-admin");
+        String usado = codigoActual(registro);
+        Session sesion = auth().confirmTotpEnrollment(ConfirmTotpEnrollmentRequest.newBuilder()
+                .setEnrollmentId(registro.getTotpEnrollment().getEnrollmentId()).setTotpCode(usado).build())
+                .getSession();
+        byte[] secreto = Base32.decodificar(registro.getTotpEnrollment().getSecretBase32());
+        var conSesion = AuthServiceGrpc.newBlockingStub(conToken(sesion));
+        String proposito = "accept-minute:" + UUID.randomUUID() + ":" + "a".repeat(64);
+        ConfirmPresenceRequest.Builder pedido = ConfirmPresenceRequest.newBuilder().setPurpose(proposito);
+
+        assertEquals(Status.Code.UNAUTHENTICATED, codigo(() -> auth().confirmPresence(
+                pedido.setTotpCode(usado).build())), "sin sesion");
+        assertEquals(Status.Code.UNAUTHENTICATED, codigo(() -> conSesion.confirmPresence(
+                pedido.setTotpCode(usado).build())), "el codigo ya se uso al confirmar el alta");
+        assertEquals(Status.Code.INVALID_ARGUMENT, codigo(() -> conSesion.confirmPresence(
+                pedido.setTotpCode(usado).setPurpose("Aceptar Acta").build())));
+
+        reloj.avanzar(Duration.ofSeconds(Totp.PASO_SEGUNDOS));
+        String nuevo = Totp.codigo(secreto, Totp.paso(reloj.instant()));
+        ConfirmPresenceResponse prueba = conSesion.confirmPresence(pedido.setPurpose(proposito).setTotpCode(nuevo)
+                .build());
+        assertEquals(Status.Code.UNAUTHENTICATED, codigo(() -> conSesion.confirmPresence(pedido.build())),
+                "cada codigo sirve una sola vez");
+
+        VerificationKey clave = TokenVerificationServiceGrpc.newBlockingStub(servidor.canalEnMemoria())
+                .getVerificationKeys(GetVerificationKeysRequest.getDefaultInstance()).getKeys(0);
+        var publica = KeyFactory.getInstance("Ed25519")
+                .generatePublic(new X509EncodedKeySpec(clave.getPublicKeySpki().toByteArray()));
+        var presencia = TokenAcceso.verificarPresencia(prueba.getPresenceToken(), reloj.instant(), publica,
+                clave.getKeyId()).orElseThrow();
+        assertEquals(sesion.getAccount().getId(), presencia.cuenta().toString());
+        assertEquals(proposito, presencia.proposito());
+        assertEquals(reloj.instant().plus(FirmaTokens.VIGENCIA_PRESENCIA).getEpochSecond(),
+                prueba.getExpiresAt().getSeconds());
+
+        // Nunca intercambiables: la prueba no es token de acceso y el token de acceso no es prueba.
+        assertTrue(TokenAcceso.verificar(prueba.getPresenceToken(), reloj.instant(), publica, clave.getKeyId())
+                .isEmpty());
+        assertTrue(TokenAcceso.verificarPresencia(sesion.getAccessToken(), reloj.instant(), publica,
+                clave.getKeyId()).isEmpty());
+        Session falsa = Session.newBuilder().setAccessToken(prueba.getPresenceToken()).build();
+        assertEquals(Status.Code.UNAUTHENTICATED, codigo(() -> AccountServiceGrpc.newBlockingStub(conToken(falsa))
+                .getCurrentAccount(GetCurrentAccountRequest.getDefaultInstance())));
+
+        reloj.avanzar(FirmaTokens.VIGENCIA_PRESENCIA);
+        assertTrue(TokenAcceso.verificarPresencia(prueba.getPresenceToken(), reloj.instant(), publica,
+                clave.getKeyId()).isEmpty(), "vence a los 2 minutos");
     }
 
     @Test
