@@ -368,6 +368,22 @@ public final class ServicioAutenticacion {
         });
     }
 
+    /**
+     * ConfirmPresence: comprueba un codigo TOTP (cada codigo sirve una sola vez, como al ingresar) y
+     * firma una prueba corta para un proposito. Otro servicio la verifica sin tener el secreto TOTP.
+     */
+    public FirmaTokens.TokenEmitido confirmarPresencia(Principal principal, String codigoTotp, String proposito) {
+        Instant ahora = reloj.instant();
+        return bd.transaccion(c -> {
+            Cuenta cuenta = Cuentas.porId(c, principal.cuentaId(), true).filter(Cuenta::activa)
+                    .orElseThrow(FalloRpc::credenciales);
+            if (!consumirTotp(c, cuenta, codigoTotp, ahora)) {
+                throw new FalloRpc(Tipo.NO_AUTENTICADO, "Codigo incorrecto");
+            }
+            return tokens.emitirPresencia(cuenta.id(), proposito, ahora);
+        });
+    }
+
     /** Cambia la contrasena (verificador y clave privada recifrada) y cierra todas las sesiones. */
     public void cambiarContrasena(Principal principal, ChangePasswordRequest peticion) {
         Instant ahora = reloj.instant();
