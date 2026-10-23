@@ -14,6 +14,7 @@ class ExpedientesPropertiesTest {
 
     private static final String BFF = "secreto-de-prueba-publico-solo-para-tests-0123456789";
     private static final String MOTOR = "secreto-motor-de-prueba-publico-solo-para-tests-01";
+    private static final String SELLO = "secreto-del-sello-de-prueba-publico-solo-para-tests-01";
 
     private static ExpedientesProperties crear(String secretoBff, String secretoMotor, String transporte,
                                                String destino, URI url) {
@@ -22,7 +23,8 @@ class ExpedientesPropertiesTest {
                 new ExpedientesProperties.Bff(secretoBff),
                 new ExpedientesProperties.Motor(transporte, destino, url, secretoMotor, Duration.ofSeconds(1),
                         Duration.ofSeconds(1)),
-                new ExpedientesProperties.Estado(Duration.ofSeconds(1), Duration.ofSeconds(1)), IDENTIDAD);
+                new ExpedientesProperties.Estado(Duration.ofSeconds(1), Duration.ofSeconds(1)), IDENTIDAD,
+                new ExpedientesProperties.Sello(SELLO));
     }
 
     private static final ExpedientesProperties.Identidad IDENTIDAD = new ExpedientesProperties.Identidad("grpc",
@@ -47,6 +49,22 @@ class ExpedientesPropertiesTest {
     }
 
     @Test
+    void exigeElSecretoDelSelloLargoYPropio() {
+        falla("ACTAFLOW_SEAL_SECRET", () -> conSello(""));
+        falla("ACTAFLOW_SEAL_SECRET debe ser distinto", () -> conSello(BFF));
+        falla("ACTAFLOW_SEAL_SECRET debe ser distinto", () -> conSello(MOTOR));
+    }
+
+    private static ExpedientesProperties conSello(String sello) {
+        return new ExpedientesProperties("0.2.0", new ExpedientesProperties.Hmac(300),
+                new ExpedientesProperties.Grpc(-1, 4096, Duration.ofSeconds(30)), new ExpedientesProperties.Bff(BFF),
+                new ExpedientesProperties.Motor("grpc", "localhost:8102", null, MOTOR, Duration.ofSeconds(1),
+                        Duration.ofSeconds(1)),
+                new ExpedientesProperties.Estado(Duration.ofSeconds(1), Duration.ofSeconds(1)), IDENTIDAD,
+                new ExpedientesProperties.Sello(sello));
+    }
+
+    @Test
     void exigeElDestinoDeIdentitySegunSuTransporte() {
         falla("ACTAFLOW_IDENTITY_URL", () -> new ExpedientesProperties("0.2.0", new ExpedientesProperties.Hmac(300),
                 new ExpedientesProperties.Grpc(-1, 4096, Duration.ofSeconds(30)), new ExpedientesProperties.Bff(BFF),
@@ -54,7 +72,7 @@ class ExpedientesPropertiesTest {
                         Duration.ofSeconds(1)),
                 new ExpedientesProperties.Estado(Duration.ofSeconds(1), Duration.ofSeconds(1)),
                 new ExpedientesProperties.Identidad("grpc-web", null, null, Duration.ofSeconds(1),
-                        Duration.ofSeconds(1))));
+                        Duration.ofSeconds(1)), new ExpedientesProperties.Sello(SELLO)));
     }
 
     @Test
