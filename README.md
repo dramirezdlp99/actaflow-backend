@@ -138,8 +138,9 @@ Repite el `install` cuando cambien `platform` o `rpc-contracts`.
 **Dockerfile Path** a `./legal-case-service/Dockerfile` y **Docker Build Context Directory** a `.`
 **antes** de hacer push. Variables: `ACTAFLOW_DB_URL`, `ACTAFLOW_DB_USERNAME`,
 `ACTAFLOW_DB_PASSWORD`, `ACTAFLOW_LEGAL_CASE_HMAC_SECRET`, `ACTAFLOW_ENGINE_URL`,
-`ACTAFLOW_ENGINE_HMAC_SECRET` y `ACTAFLOW_IDENTITY_URL` (la URL pública de identity-service en
-Render; de ahí pide la clave pública que verifica los tokens, sin secreto). Health check:
+`ACTAFLOW_ENGINE_HMAC_SECRET`, `ACTAFLOW_SEAL_SECRET` (de él se derivan la clave y el certificado
+del sello de las actas; distinto de los HMAC) y `ACTAFLOW_IDENTITY_URL` (la URL pública de
+identity-service en Render; de ahí pide la clave pública que verifica los tokens, sin secreto). Health check:
 `/actuator/health`.
 
 **identity-service** (nuevo): *New → Web Service* → este mismo repo, runtime Docker, región
@@ -167,6 +168,7 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 | `actaflow.templates.v1.TemplateService` | — | Biblioteca de plantillas (**lectura pública**, sin sesión), editor, vista previa, versiones y publicación |
 | `actaflow.hearings.v1.HearingService` | — | Audiencias, segmentos de audio sellados, transcripción y extracción de entidades (cola asíncrona), eventos en vivo |
 | `actaflow.crypto.v1.ProcessorKeyService` | — | Clave pública del motor de IA (pedida al motor y guardada 10 min) para sellarle el audio |
+| `actaflow.minutes.v1.MinuteService` | — | Actas: crear, cerrar, documento final sellado, aceptación con prueba de presencia y verificación **pública** del sello |
 
 ## Identidad (bloque BE-2)
 
@@ -182,6 +184,10 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
 - **Sin servicio de correo:** invitar devuelve el token una sola vez y el administrador comparte
   el enlace. La base guarda solo su hash.
 - **Persistencia:** JDBC directo sobre el esquema `identity` (migracion `V2`).
+- **Prueba de presencia** (`ConfirmPresence`, contratos v0.4.0): con sesión y un código TOTP nuevo,
+  identity firma una prueba de 2 minutos con un solo propósito (por ejemplo
+  `accept-minute:<documento>:<sha256>`). Lleva `pur` y no lleva rol: `TokenAcceso` nunca la acepta
+  como token de acceso, y un token de acceso nunca vale como prueba.
 
 ## Expedientes (bloque BE-3)
 
@@ -258,3 +264,31 @@ Los dos: Auto-Deploy **After CI Checks Pass**, rama `main`.
   cliente se reconecta con el último número que recibió y no pierde nada.
 - **Clave del motor** (`ProcessorKeyService`, con sesión): el BFF no habla con el motor, así que
   legal-case le pide su clave pública y la guarda 10 minutos. Con ella el navegador sella el audio.
+
+## Actas (bloque BE-7)
+
+- **Nadie en el servidor lee el acta** (ADR 0004 de actaflow-contracts). El navegador llena la
+  plantilla publicada con las entidades revisadas, y al cerrar sella el contenido final
+  (`FinalContent`) para el motor de IA. legal-case lo guarda sellado y encola el trabajo
+  `RENDERIZAR_ACTA`. El motor genera el PDF en memoria y devuelve el PDF cifrado y su SHA-256.
+- **Sello de integridad** (`sello/Sellador`): firma CMS separada (RFC 5652) sobre el SHA-256, con
+  atributos firmados (tipo, hora y resumen) y el certificado de ActaFlow dentro. La clave ECDSA
+  P-256 y el certificado autofirmado se derivan de `ACTAFLOW_SEAL_SECRET`: sobreviven a los
+  reinicios sin archivos. Cualquiera puede comprobarlo con
+  `openssl cms -verify -binary -inform DER -in sello.p7s -content acta.pdf -noverify`. No es una
+  firma digital certificada (Ley 527 de 1999).
+- **Estados:** `DRAFT` → `SEALING` (cerrada, generando el PDF) → `AWAITING_ACCEPTANCE` (esperando
+  a las partes) → `FINAL`. Si el motor falla del todo, el acta vuelve a `DRAFT` para cerrarla otra
+  vez. El contenido sellado se borra en cuanto hay PDF.
+- **Permisos:** el conciliador crea y cierra el acta; todos los participantes la leen; aceptan solo
+  las **partes** del expediente al momento de sellar.
+- **Aceptación con segundo factor:** el TOTP lo guarda identity. La parte confirma su código en
+  identity (`ConfirmPresence`) y legal-case exige esa prueba firmada, para su cuenta y para
+  `accept-minute:<documento>:<sha256>`, verificada con la clave pública de identity. El SHA-256
+  que manda es el del PDF que descifró y leyó.
+- **Verificación pública** (`VerifyDocument`, sin sesión): por SHA-256 devuelve si es auténtico,
+  el sello, el radicado y cuántas partes aceptaron. No revela nada más del caso.
+- `FillMinute` responde `UNIMPLEMENTED`: el navegador llena la plantilla.
+- Las versiones **publicadas** de una plantilla (del sistema o de la propia organización) las lee
+  cualquier persona con sesión (`GetTemplateVersion`); los borradores, solo los administradores
+  autores.
