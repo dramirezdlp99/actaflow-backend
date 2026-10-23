@@ -13,11 +13,12 @@ option java_package = "com.actaflow.contracts.minutes.v1";
 // Minutes (actas) and their final sealed documents. Implemented by legal-case-service.
 //
 // Step 4 of the case study: "the AI autocompletes the official minute by pouring the extracted
-// data onto the selected legal template". Because the minute is confidential, the template is
-// filled by the document worker as a sealed processor: the browser seals the confirmed
-// entities for it, the worker fills the template in memory and returns the draft encrypted
-// with the same content key. The draft then becomes the starting point of the collaborative
-// document (actaflow.collaboration.v1).
+// data onto the selected legal template". Because the minute is confidential, no server fills it:
+// since v0.4.0 the browser fills the published template with the reviewed entities itself (the
+// template language is public and deterministic) and only the final content leaves it, sealed
+// for the AI engine, which renders the PDF (actaflow.engine.v1.DocumentService). legal-case
+// signs the PDF's SHA-256 without ever seeing the PDF. FillMinute is kept for compatibility but
+// legal-case answers UNIMPLEMENTED.
 //
 // Legal note: the final document carries an INTEGRITY SEAL (SHA-256 + CMS signature with
 // ActaFlow's own certificate) plus each party's acceptance confirmed with their TOTP. It is
@@ -170,6 +171,20 @@ message CloseMinuteResponse {
   string job_id = 2;
 }
 
+// Plaintext sealed inside CloseMinuteRequest.final_content for the AI engine
+// (plaintext_type = "actaflow.minutes.v1.FinalContent"; AAD purpose "minute-final", resource =
+// minute id).
+message FinalContent {
+  // Title printed in the header of every page.
+  string title = 1 [(buf.validate.field).string.max_len = 200];
+  // The final minute as restricted HTML: only h2, h3, p, br, strong and span, the same subset the
+  // template language produces.
+  string html = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 500000
+  }];
+}
+
 // Public integrity seal of a final document.
 message DocumentSeal {
   // SHA-256 of the PDF, hex.
@@ -230,8 +245,15 @@ message AcceptFinalDocumentRequest {
   string document_id = 1 [(buf.validate.field).string.uuid = true];
   // SHA-256 the party computed over the PDF they read, so they accept exactly that file.
   string sha256_hex = 2 [(buf.validate.field).string.pattern = "^[0-9a-f]{64}$"];
-  // Current TOTP code of the party.
+  // Current TOTP code of the party. legal-case cannot check it (identity holds the TOTP secret):
+  // it is checked through presence_token.
   string totp_code = 3 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+  // Proof from actaflow.identity.v1.AuthService.ConfirmPresence for that same code, with purpose
+  // "accept-minute:<document_id>:<sha256_hex>". Required since v0.4.0.
+  string presence_token = 4 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 2048
+  }];
 }
 
 // Response of AcceptFinalDocument.
