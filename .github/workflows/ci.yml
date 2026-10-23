@@ -68,6 +68,7 @@ jobs:
       TOKENS_IDENTITY: tokens-de-ci-publico-no-usar-en-produccion-ide-0000
       SECRETO_LEGAL_CASE: secreto-de-ci-publico-no-usar-en-produccion-exp-000
       SECRETO_MOTOR: secreto-de-ci-publico-no-usar-en-produccion-mot-000
+      SECRETO_SELLO: secreto-de-ci-publico-no-usar-en-produccion-sel-000
       BASE: >-
         -e ACTAFLOW_DB_URL=jdbc:postgresql://localhost:5432/actaflow_test
         -e ACTAFLOW_DB_USERNAME=actaflow_test -e ACTAFLOW_DB_PASSWORD=actaflow_test
@@ -89,6 +90,7 @@ jobs:
           docker run -d --name legal-case --network host --memory=512m $BASE -e PORT=9097 \
             -e ACTAFLOW_LEGAL_CASE_HMAC_SECRET=$SECRETO_LEGAL_CASE \
             -e ACTAFLOW_ENGINE_HMAC_SECRET=$SECRETO_MOTOR \
+            -e ACTAFLOW_SEAL_SECRET=$SECRETO_SELLO \
             -e ACTAFLOW_ENGINE_URL=http://127.0.0.1:9 \
             -e ACTAFLOW_IDENTITY_URL=http://127.0.0.1:9098 actaflow-legal-case:ci
       - name: Esperar /actuator/health de los dos
