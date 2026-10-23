@@ -23,6 +23,7 @@ final class Reglas {
             "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
     private static final Pattern CORREO = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
     static final Pattern TOTP = Pattern.compile("^[0-9]{6}$");
+    static final Pattern PROPOSITO = Pattern.compile("^[a-z0-9:-]{1,200}$");
     static final Pattern RECUPERACION = Pattern.compile("^[A-Z0-9]{5}-[A-Z0-9]{5}$");
     /** Las claves de usuario son P-256 sin comprimir (65 bytes que empiezan por 0x04), por WebCrypto. */
     static final String ALGORITMO_CLAVE = "ECDH-P256";
