@@ -10,6 +10,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 import com.actaflow.backend.expedientes.aplicacion.ServicioAudiencias;
 import com.actaflow.backend.expedientes.seguridad.InterceptorSesion;
@@ -194,7 +195,9 @@ public final class ServicioAudienciasGrpc extends HearingServiceGrpc.HearingServ
         private final long inicio = System.nanoTime();
         private long secuencia;
         private long ultimoEnvio = System.nanoTime();
-        private boolean cerrada;
+        /** ReentrantLock y no synchronized: se usa desde hilos virtuales (ver ServicioClavesProcesadorGrpc). */
+        private final ReentrantLock candado = new ReentrantLock();
+        private volatile boolean cerrada;
 
         Vigilancia(ServerCallStreamObserver<WatchHearingEventsResponse> salida, UUID audienciaId, long secuencia) {
             this.salida = salida;
@@ -202,13 +205,27 @@ public final class ServicioAudienciasGrpc extends HearingServiceGrpc.HearingServ
             this.secuencia = secuencia;
         }
 
-        synchronized void empezar() {
-            salida.setOnCancelHandler(this::cerrar);
-            tarea.set(planificador.scheduleWithFixedDelay(this, 0, intervalo.toMillis(), TimeUnit.MILLISECONDS));
+        void empezar() {
+            candado.lock();
+            try {
+                salida.setOnCancelHandler(this::cerrar);
+                tarea.set(planificador.scheduleWithFixedDelay(this, 0, intervalo.toMillis(), TimeUnit.MILLISECONDS));
+            } finally {
+                candado.unlock();
+            }
         }
 
         @Override
-        public synchronized void run() {
+        public void run() {
+            candado.lock();
+            try {
+                ejecutar();
+            } finally {
+                candado.unlock();
+            }
+        }
+
+        private void ejecutar() {
             if (cerrada) {
                 return;
             }
@@ -244,7 +261,8 @@ public final class ServicioAudienciasGrpc extends HearingServiceGrpc.HearingServ
             }
         }
 
-        private synchronized void cerrar() {
+        /** Sin esperar a que termine una consulta en curso: la tarea revisa `cerrada` antes de enviar. */
+        private void cerrar() {
             cerrada = true;
             ScheduledFuture<?> t = tarea.get();
             if (t != null) {
