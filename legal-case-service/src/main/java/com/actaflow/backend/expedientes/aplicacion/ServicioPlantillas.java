@@ -185,13 +185,27 @@ public final class ServicioPlantillas {
         });
     }
 
-    /** Una version con su fuente (borradores incluidos), para volver a abrirla en el editor. */
+    /**
+     * Una version con su fuente. Los borradores solo los abren los administradores de la organizacion
+     * autora (el editor). Una version ya publicada, del sistema o de la propia organizacion, la lee
+     * cualquier persona con sesion: el acta se llena en el navegador con la version que fijo.
+     */
     public GetTemplateVersionResponse version(Usuario usuario, UUID id, int numero) {
-        administrador(usuario);
         return bd.transaccion(c -> {
-            propia(c, usuario, id, false);
-            return GetTemplateVersionResponse.newBuilder().setTemplate(version(c, id, numero, true)
-                    .orElseThrow(() -> new FalloRpc(Tipo.NO_ENCONTRADO, "Esa versión no existe"))).build();
+            record Datos(Optional<UUID> organizacion, String estado) {
+            }
+            Datos datos = Bd.uno(c, "select p.organization_id, v.state from plantilla p join plantilla_version v"
+                    + " on v.plantilla_id = p.id where p.id = ? and v.version = ?",
+                    f -> new Datos(Optional.ofNullable(Bd.uuid(f, "organization_id")), f.getString("state")),
+                    id, numero).orElseThrow(() -> new FalloRpc(Tipo.NO_ENCONTRADO, "Esa versión no existe"));
+            boolean publicada = !"DRAFT".equals(datos.estado());
+            boolean alcance = datos.organizacion().map(usuario.organizacionId()::equals).orElse(true);
+            if (!publicada || !alcance) {
+                administrador(usuario);
+                propia(c, usuario, id, false);
+            }
+            return GetTemplateVersionResponse.newBuilder().setTemplate(version(c, id, numero, true).orElseThrow())
+                    .build();
         });
     }
 
