@@ -213,6 +213,21 @@ class FlujoPlantillasTest {
     }
 
     @Test
+    void cualquieraConSesionLeeUnaVersionPublicadaPeroNoUnBorrador() {
+        Template sistema = anonimo().getPublishedTemplate(GetPublishedTemplateRequest.newBuilder()
+                .setSlug("acta-de-mediacion").build()).getTemplate();
+        GetTemplateVersionRequest publicada = GetTemplateVersionRequest.newBuilder().setTemplateId(sistema.getId())
+                .setVersion(sistema.getVersion()).build();
+        // El acta se llena en el navegador con la version que fijo: un miembro (no administrador) la lee.
+        assertEquals(sistema.getSource(), como(miembro).getTemplateVersion(publicada).getTemplate().getSource());
+        assertEquals(Status.Code.UNAUTHENTICATED, codigo(() -> anonimo().getTemplateVersion(publicada)));
+
+        Template borrador = como(admin).saveTemplateDraft(borrador("solo-borrador", FUENTE).build()).getTemplate();
+        assertEquals(Status.Code.PERMISSION_DENIED, codigo(() -> como(miembro).getTemplateVersion(
+                GetTemplateVersionRequest.newBuilder().setTemplateId(borrador.getId()).setVersion(1).build())));
+    }
+
+    @Test
     void validaYPrevisualizaConDiagnosticosYHtmlSeguro() {
         var validacion = como(admin).validateTemplate(ValidateTemplateRequest.newBuilder()
                 .setSource("{% si acuerdo.total %}\n{{ acuerdo.total | moneda }}").build());
