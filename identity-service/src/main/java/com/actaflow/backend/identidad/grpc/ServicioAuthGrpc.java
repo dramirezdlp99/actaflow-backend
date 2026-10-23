@@ -6,6 +6,8 @@ import com.actaflow.backend.identidad.aplicacion.ServicioAutenticacion;
 import com.actaflow.contracts.identity.v1.AuthServiceGrpc;
 import com.actaflow.contracts.identity.v1.CompleteSecondFactorRequest;
 import com.actaflow.contracts.identity.v1.CompleteSecondFactorResponse;
+import com.actaflow.contracts.identity.v1.ConfirmPresenceRequest;
+import com.actaflow.contracts.identity.v1.ConfirmPresenceResponse;
 import com.actaflow.contracts.identity.v1.ConfirmTotpEnrollmentRequest;
 import com.actaflow.contracts.identity.v1.ConfirmTotpEnrollmentResponse;
 import com.actaflow.contracts.identity.v1.GetLoginParametersRequest;
@@ -21,6 +23,7 @@ import com.actaflow.contracts.identity.v1.RegenerateRecoveryCodesRequest;
 import com.actaflow.contracts.identity.v1.RegenerateRecoveryCodesResponse;
 import com.actaflow.contracts.identity.v1.RegisterRequest;
 import com.actaflow.contracts.identity.v1.RegisterResponse;
+import com.google.protobuf.Timestamp;
 
 import io.grpc.stub.StreamObserver;
 
@@ -127,6 +130,19 @@ public final class ServicioAuthGrpc extends AuthServiceGrpc.AuthServiceImplBase 
                     .verificar();
             return RegenerateRecoveryCodesResponse.newBuilder().addAllRecoveryCodes(servicio.regenerarCodigos(
                     principal, p.getTotpCode(), p.getPrivateKeyByRecovery().toByteArray())).build();
+        });
+    }
+
+    @Override
+    public void confirmPresence(ConfirmPresenceRequest p, StreamObserver<ConfirmPresenceResponse> r) {
+        responder(r, () -> {
+            var principal = Sesion.exigir();
+            new Reglas().patron("totp_code", p.getTotpCode(), Reglas.TOTP)
+                    .patron("purpose", p.getPurpose(), Reglas.PROPOSITO)
+                    .verificar();
+            var prueba = servicio.confirmarPresencia(principal, p.getTotpCode(), p.getPurpose());
+            return ConfirmPresenceResponse.newBuilder().setPresenceToken(prueba.token())
+                    .setExpiresAt(Timestamp.newBuilder().setSeconds(prueba.venceEn().getEpochSecond())).build();
         });
     }
 }
