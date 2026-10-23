@@ -43,6 +43,11 @@ service AuthService {
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   // Replaces the recovery codes. Requires a valid TOTP code.
   rpc RegenerateRecoveryCodes(RegenerateRecoveryCodesRequest) returns (RegenerateRecoveryCodesResponse);
+  // Confirms with a current TOTP code that the person is present and returns a short-lived proof
+  // bound to one purpose, so another service can require a second factor without holding the TOTP
+  // secret (for example accepting a final minute). Requires an access token.
+  // Errors: UNAUTHENTICATED when the code is wrong or was already used.
+  rpc ConfirmPresence(ConfirmPresenceRequest) returns (ConfirmPresenceResponse);
 }
 
 // Parameters of the password-based key derivation (PBKDF2-SHA-256).
@@ -232,4 +237,21 @@ message RegenerateRecoveryCodesRequest {
 message RegenerateRecoveryCodesResponse {
   // The new ten recovery codes, shown once.
   repeated string recovery_codes = 1;
+}
+
+// Request for ConfirmPresence. Requires an access token.
+message ConfirmPresenceRequest {
+  // Current TOTP code. Like at sign-in, each code works once.
+  string totp_code = 1 [(buf.validate.field).string.pattern = "^[0-9]{6}$"];
+  // What the proof is for, for example "accept-minute:<document_id>:<sha256_hex>".
+  string purpose = 2 [(buf.validate.field).string.pattern = "^[a-z0-9:-]{1,200}$"];
+}
+
+// Response of ConfirmPresence.
+message ConfirmPresenceResponse {
+  // Proof signed with the access-token keys (TokenVerificationService), valid for two minutes.
+  // It carries the account and the purpose, and is never accepted as an access token.
+  string presence_token = 1;
+  // When the proof expires.
+  google.protobuf.Timestamp expires_at = 2;
 }
