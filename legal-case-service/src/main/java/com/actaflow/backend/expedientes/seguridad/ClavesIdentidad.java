@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 import com.actaflow.backend.plataforma.seguridad.TokenAcceso;
@@ -30,6 +31,7 @@ public final class ClavesIdentidad {
 
     private final Supplier<List<VerificationKey>> fuente;
     private final Clock reloj;
+    private final ReentrantLock candado = new ReentrantLock();
     private Map<String, PublicKey> claves = Map.of();
     private Instant pedidasEn = Instant.MIN;
     private Instant ultimoIntento = Instant.MIN;
@@ -41,14 +43,21 @@ public final class ClavesIdentidad {
     }
 
     /** Clave para ese id, pidiendo las claves otra vez si hace falta y esta permitido. */
-    public synchronized Optional<PublicKey> clave(String idClave) {
-        Instant ahora = reloj.instant();
-        boolean vencidas = ahora.isAfter(pedidasEn.plus(VIGENCIA));
-        boolean desconocida = !claves.containsKey(idClave);
-        if ((vencidas || desconocida) && !ahora.isBefore(ultimoIntento.plus(ESPERA_MINIMA))) {
-            pedir(ahora);
+    public Optional<PublicKey> clave(String idClave) {
+        // ReentrantLock y no synchronized: corre en hilos virtuales y pedir() espera a identity (ver
+        // ServicioClavesProcesadorGrpc).
+        candado.lock();
+        try {
+            Instant ahora = reloj.instant();
+            boolean vencidas = ahora.isAfter(pedidasEn.plus(VIGENCIA));
+            boolean desconocida = !claves.containsKey(idClave);
+            if ((vencidas || desconocida) && !ahora.isBefore(ultimoIntento.plus(ESPERA_MINIMA))) {
+                pedir(ahora);
+            }
+            return Optional.ofNullable(claves.get(idClave));
+        } finally {
+            candado.unlock();
         }
-        return Optional.ofNullable(claves.get(idClave));
     }
 
     private void pedir(Instant ahora) {
