@@ -21,6 +21,8 @@ actaflow:
     hmac-secret: secreto-motor-de-prueba-publico-solo-para-tests-01
     connect-timeout: 1s
     request-timeout: 3s
+  sello:
+    secret: secreto-del-sello-de-prueba-publico-solo-para-tests-01
   identidad:
     # Puerto 9 (discard): sin identity. Los tests de expedientes usan su propia clave de prueba.
     transport: grpc
