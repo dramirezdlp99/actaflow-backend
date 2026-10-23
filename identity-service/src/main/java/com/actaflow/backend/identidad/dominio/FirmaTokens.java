@@ -69,6 +69,26 @@ public final class FirmaTokens {
     }
 
     /** Principal del token si la firma, el emisor y el vencimiento son validos. */
+    /** Vigencia de una prueba de presencia: lo justo para aceptar un acta despues de escribir el codigo. */
+    public static final Duration VIGENCIA_PRESENCIA = Duration.ofMinutes(2);
+
+    /**
+     * Prueba de presencia (ConfirmPresence): la misma firma que el token de acceso, pero sin
+     * organizacion ni rol y con el proposito ({@code pur}). TokenAcceso nunca la acepta como acceso.
+     */
+    public TokenEmitido emitirPresencia(UUID cuentaId, String proposito, Instant ahora) {
+        Instant vence = ahora.plus(VIGENCIA_PRESENCIA);
+        Map<String, Object> carga = new LinkedHashMap<>();
+        carga.put("iss", EMISOR);
+        carga.put("sub", cuentaId.toString());
+        carga.put(TokenAcceso.RECLAMO_PROPOSITO, proposito);
+        carga.put("iat", ahora.getEpochSecond());
+        carga.put("exp", vence.getEpochSecond());
+        carga.put("jti", UUID.randomUUID().toString());
+        String firmable = TokenAcceso.firmable(idClave, carga);
+        return new TokenEmitido(firmable + "." + TokenAcceso.firma(firmar(firmable)), vence);
+    }
+
     public Optional<Principal> verificar(String token, Instant ahora) {
         return verificar(token, ahora, claves.getPublic(), idClave);
     }
