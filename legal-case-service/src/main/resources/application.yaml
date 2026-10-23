@@ -81,6 +81,10 @@ actaflow:
     connect-timeout: 5s
     # identity puede estar dormido en Render: la primera peticion espera a que despierte.
     request-timeout: 90s
+  sello:
+    # Secreto del que se deriva la clave ECDSA (y el certificado) del sello de las actas.
+    # Obligatorio y distinto de los secretos HMAC. Cambiarlo cambia el certificado de los sellos nuevos.
+    secret: ${ACTAFLOW_SEAL_SECRET:}
   estado:
     timeout-base-datos: 15s
     timeout-motor: 7s
