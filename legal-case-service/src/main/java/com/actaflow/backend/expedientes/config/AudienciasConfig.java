@@ -7,10 +7,14 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import com.actaflow.backend.expedientes.aplicacion.ColaTrabajos;
+import com.actaflow.backend.expedientes.aplicacion.ServicioActas;
 import com.actaflow.backend.expedientes.aplicacion.ServicioAudiencias;
+import com.actaflow.backend.expedientes.grpc.ServicioActasGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioAudienciasGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioClavesProcesadorGrpc;
 import com.actaflow.backend.expedientes.motor.MotorGrpc;
+import com.actaflow.backend.expedientes.sello.Sellador;
+import com.actaflow.backend.expedientes.seguridad.ClavesIdentidad;
 import com.actaflow.backend.expedientes.seguridad.InterceptorSesion;
 import com.actaflow.backend.plataforma.grpc.ClienteGrpc;
 import com.actaflow.backend.plataforma.persistencia.Bd;
@@ -25,7 +29,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Audiencias: el servicio del contrato (con sesion) y el worker que transcribe los segmentos y
+ * Audiencias y actas: los servicios del contrato (con sesion) y el worker que transcribe los segmentos,
  * extrae las entidades con el motor de IA. Un solo hilo de trabajo: Render Free tiene una CPU y el
  * motor transcribe de a una intervencion.
  */
@@ -72,8 +76,21 @@ public class AudienciasConfig {
     }
 
     @Bean
-    public ColaTrabajos colaTrabajos(Bd bd, Clock reloj, @Qualifier("clienteMotor") ClienteGrpc clienteMotor) {
-        return new ColaTrabajos(bd, reloj, new MotorGrpc(clienteMotor, PLAZO_MOTOR));
+    public Sellador sellador(ExpedientesProperties propiedades) {
+        return new Sellador(propiedades.sello().secret());
+    }
+
+    @Bean
+    public ColaTrabajos colaTrabajos(Bd bd, Clock reloj, @Qualifier("clienteMotor") ClienteGrpc clienteMotor,
+                                     Sellador sellador) {
+        return new ColaTrabajos(bd, reloj, new MotorGrpc(clienteMotor, PLAZO_MOTOR), sellador);
+    }
+
+    /** Actas: VerifyDocument es publico; el resto exige sesion. */
+    @Bean
+    public BindableService servicioActasGrpc(Bd bd, Clock reloj, ClavesIdentidad claves) {
+        InterceptorSesion sesion = new InterceptorSesion(claves, reloj, ServicioActasGrpc.PUBLICOS);
+        return CasosConfig.conSesion(new ServicioActasGrpc(new ServicioActas(bd, reloj, claves)), sesion);
     }
 
     @Bean
