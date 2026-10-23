@@ -14,15 +14,18 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties(prefix = "actaflow")
 public record ExpedientesProperties(String version, Hmac hmac, Grpc grpc, Bff bff, Motor motor, Estado estado,
-                                    Identidad identidad) {
+                                    Identidad identidad, Sello sello) {
 
     private static final int LONGITUD_MINIMA_SECRETO = 32;
 
     public ExpedientesProperties {
-        exigir(hmac != null && grpc != null && bff != null && motor != null && estado != null && identidad != null,
-                "Falta configuracion de actaflow.*");
+        exigir(hmac != null && grpc != null && bff != null && motor != null && estado != null && identidad != null
+                && sello != null, "Falta configuracion de actaflow.*");
         exigirSecreto(bff.hmacSecret(), "ACTAFLOW_LEGAL_CASE_HMAC_SECRET");
         exigirSecreto(motor.hmacSecret(), "ACTAFLOW_ENGINE_HMAC_SECRET");
+        exigirSecreto(sello.secret(), "ACTAFLOW_SEAL_SECRET");
+        exigir(!sello.secret().equals(bff.hmacSecret()) && !sello.secret().equals(motor.hmacSecret()),
+                "ACTAFLOW_SEAL_SECRET debe ser distinto de los secretos HMAC");
         exigir(!bff.hmacSecret().equals(motor.hmacSecret()),
                 "ACTAFLOW_LEGAL_CASE_HMAC_SECRET y ACTAFLOW_ENGINE_HMAC_SECRET deben ser distintos");
         exigir(hmac.toleranceSeconds() >= 30 && hmac.toleranceSeconds() <= 900,
@@ -65,6 +68,10 @@ public record ExpedientesProperties(String version, Hmac hmac, Grpc grpc, Bff bf
      */
     public record Motor(String transport, String grpcTarget, URI url, String hmacSecret, Duration connectTimeout,
                         Duration requestTimeout) {
+    }
+
+    /** Secreto del que se deriva la clave del sello de las actas (y su certificado). */
+    public record Sello(String secret) {
     }
 
     /** Tiempos maximos de cada comprobacion de GetServiceStatus. */
