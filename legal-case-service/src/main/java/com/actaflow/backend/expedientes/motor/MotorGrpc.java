@@ -7,8 +7,11 @@ import com.actaflow.backend.expedientes.aplicacion.MotorIA;
 import com.actaflow.backend.plataforma.grpc.ClienteGrpc;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
 import com.actaflow.contracts.crypto.v1.SealedEnvelope;
+import com.actaflow.contracts.engine.v1.DocumentServiceGrpc;
 import com.actaflow.contracts.engine.v1.ExtractEntitiesRequest;
 import com.actaflow.contracts.engine.v1.ExtractionServiceGrpc;
+import com.actaflow.contracts.engine.v1.RenderMinutePdfRequest;
+import com.actaflow.contracts.engine.v1.RenderMinutePdfResponse;
 import com.actaflow.contracts.engine.v1.TranscribeSegmentRequest;
 import com.actaflow.contracts.engine.v1.TranscriptionServiceGrpc;
 
@@ -42,5 +45,14 @@ public final class MotorGrpc implements MotorIA {
                 .extractEntities(ExtractEntitiesRequest.newBuilder().setCaseId(casoId).setExtractionId(extraccionId)
                         .setInput(entrada).build())
                 .getEntities();
+    }
+
+    @Override
+    public Renderizado renderizar(String casoId, String actaId, SealedEnvelope contenido) {
+        RenderMinutePdfResponse respuesta = DocumentServiceGrpc.newBlockingStub(cliente.canal())
+                .withDeadlineAfter(plazo.toMillis(), TimeUnit.MILLISECONDS)
+                .renderMinutePdf(RenderMinutePdfRequest.newBuilder().setCaseId(casoId).setMinuteId(actaId)
+                        .setFinalContent(contenido).build());
+        return new Renderizado(respuesta.getPdf(), respuesta.getSha256Hex(), respuesta.getPageCount());
     }
 }
