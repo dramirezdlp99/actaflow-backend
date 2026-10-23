@@ -3,6 +3,7 @@ package com.actaflow.backend.expedientes.grpc;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 import com.actaflow.contracts.crypto.v1.GetProcessorKeysRequest;
@@ -26,6 +27,7 @@ public final class ServicioClavesProcesadorGrpc extends ProcessorKeyServiceGrpc.
     private final Supplier<GetProcessorKeysResponse> motor;
     private final Clock reloj;
     private final Duration vigencia;
+    private final ReentrantLock candado = new ReentrantLock();
     private GetProcessorKeysResponse guardada;
     private Instant vence = Instant.MIN;
 
@@ -50,16 +52,26 @@ public final class ServicioClavesProcesadorGrpc extends ProcessorKeyServiceGrpc.
         r.onCompleted();
     }
 
-    private synchronized GetProcessorKeysResponse claves() {
-        Instant ahora = reloj.instant();
-        if (guardada == null || !ahora.isBefore(vence)) {
-            GetProcessorKeysResponse nuevas = motor.get();
-            if (nuevas.getKeysCount() == 0) {
-                throw Status.UNAVAILABLE.withDescription("El motor no publico claves").asRuntimeException();
+    /**
+     * ReentrantLock y no synchronized: cada llamada gRPC corre en un hilo virtual, y en Java 21 un hilo
+     * virtual que espera dentro de synchronized bloquea su hilo real. En Render Free hay uno solo, asi
+     * que esperar al motor dormido (hasta 45 s) congelaba todo el servicio, health check incluido.
+     */
+    private GetProcessorKeysResponse claves() {
+        candado.lock();
+        try {
+            Instant ahora = reloj.instant();
+            if (guardada == null || !ahora.isBefore(vence)) {
+                GetProcessorKeysResponse nuevas = motor.get();
+                if (nuevas.getKeysCount() == 0) {
+                    throw Status.UNAVAILABLE.withDescription("El motor no publico claves").asRuntimeException();
+                }
+                guardada = nuevas;
+                vence = ahora.plus(vigencia);
             }
-            guardada = nuevas;
-            vence = ahora.plus(vigencia);
+            return guardada;
+        } finally {
+            candado.unlock();
         }
-        return guardada;
     }
 }
