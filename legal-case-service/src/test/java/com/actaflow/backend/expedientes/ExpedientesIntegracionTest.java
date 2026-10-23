@@ -1,6 +1,7 @@
 package com.actaflow.backend.expedientes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.net.URI;
@@ -28,6 +29,9 @@ import com.actaflow.contracts.templates.v1.ListPublishedTemplatesRequest;
 import com.actaflow.contracts.hearings.v1.GetHearingRequest;
 import com.actaflow.contracts.hearings.v1.HearingServiceGrpc;
 import com.actaflow.contracts.hearings.v1.WatchHearingEventsRequest;
+import com.actaflow.contracts.minutes.v1.ListMinutesRequest;
+import com.actaflow.contracts.minutes.v1.MinuteServiceGrpc;
+import com.actaflow.contracts.minutes.v1.VerifyDocumentRequest;
 import com.actaflow.contracts.templates.v1.TemplateServiceGrpc;
 import com.actaflow.contracts.templates.v1.ValidateTemplateRequest;
 import com.google.protobuf.ByteString;
@@ -162,6 +166,21 @@ class ExpedientesIntegracionTest {
                                 WatchHearingEventsRequest.newBuilder().setHearingId(leer.getHearingId()).build())
                                 .hasNext());
                 assertEquals(Status.Code.UNAUTHENTICATED, flujo.getStatus().getCode(), "streaming del servidor");
+            }
+        }
+    }
+
+    @Test
+    void lasActasSeVerificanSinSesionPeroLoDemasLaExige() {
+        VerifyDocumentRequest verificar = VerifyDocumentRequest.newBuilder().setSha256Hex("0".repeat(64)).build();
+        try (ClienteGrpc web = bff("grpc-web"); ClienteGrpc nativo = bff("grpc")) {
+            for (ClienteGrpc cliente : List.of(web, nativo)) {
+                assertFalse(MinuteServiceGrpc.newBlockingStub(cliente.canal()).verifyDocument(verificar)
+                        .getAuthentic());
+                StatusRuntimeException sinToken = assertThrows(StatusRuntimeException.class,
+                        () -> MinuteServiceGrpc.newBlockingStub(cliente.canal()).listMinutes(
+                                ListMinutesRequest.newBuilder().setCaseId(UUID.randomUUID().toString()).build()));
+                assertEquals(Status.Code.UNAUTHENTICATED, sinToken.getStatus().getCode());
             }
         }
     }
