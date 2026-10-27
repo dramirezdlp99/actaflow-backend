@@ -29,6 +29,8 @@ import com.actaflow.contracts.templates.v1.ListPublishedTemplatesRequest;
 import com.actaflow.contracts.hearings.v1.GetHearingRequest;
 import com.actaflow.contracts.hearings.v1.HearingServiceGrpc;
 import com.actaflow.contracts.hearings.v1.WatchHearingEventsRequest;
+import com.actaflow.contracts.collaboration.v1.CollaborationServiceGrpc;
+import com.actaflow.contracts.collaboration.v1.GetDocumentStateRequest;
 import com.actaflow.contracts.minutes.v1.ListMinutesRequest;
 import com.actaflow.contracts.minutes.v1.MinuteServiceGrpc;
 import com.actaflow.contracts.minutes.v1.VerifyDocumentRequest;
@@ -180,6 +182,19 @@ class ExpedientesIntegracionTest {
                 StatusRuntimeException sinToken = assertThrows(StatusRuntimeException.class,
                         () -> MinuteServiceGrpc.newBlockingStub(cliente.canal()).listMinutes(
                                 ListMinutesRequest.newBuilder().setCaseId(UUID.randomUUID().toString()).build()));
+                assertEquals(Status.Code.UNAUTHENTICATED, sinToken.getStatus().getCode());
+            }
+        }
+    }
+
+    @Test
+    void elBorradorColaborativoSePublicaYExigeSesion() {
+        GetDocumentStateRequest estado = GetDocumentStateRequest.newBuilder()
+                .setMinuteId(UUID.randomUUID().toString()).build();
+        try (ClienteGrpc web = bff("grpc-web"); ClienteGrpc nativo = bff("grpc")) {
+            for (ClienteGrpc cliente : List.of(web, nativo)) {
+                StatusRuntimeException sinToken = assertThrows(StatusRuntimeException.class,
+                        () -> CollaborationServiceGrpc.newBlockingStub(cliente.canal()).getDocumentState(estado));
                 assertEquals(Status.Code.UNAUTHENTICATED, sinToken.getStatus().getCode());
             }
         }
