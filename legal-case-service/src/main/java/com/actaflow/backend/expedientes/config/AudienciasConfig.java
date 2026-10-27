@@ -9,9 +9,11 @@ import java.util.concurrent.TimeUnit;
 import com.actaflow.backend.expedientes.aplicacion.ColaTrabajos;
 import com.actaflow.backend.expedientes.aplicacion.ServicioActas;
 import com.actaflow.backend.expedientes.aplicacion.ServicioAudiencias;
+import com.actaflow.backend.expedientes.aplicacion.ServicioColaboracion;
 import com.actaflow.backend.expedientes.grpc.ServicioActasGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioAudienciasGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioClavesProcesadorGrpc;
+import com.actaflow.backend.expedientes.grpc.ServicioColaboracionGrpc;
 import com.actaflow.backend.expedientes.motor.MotorGrpc;
 import com.actaflow.backend.expedientes.sello.Sellador;
 import com.actaflow.backend.expedientes.seguridad.ClavesIdentidad;
@@ -91,6 +93,12 @@ public class AudienciasConfig {
     public BindableService servicioActasGrpc(Bd bd, Clock reloj, ClavesIdentidad claves) {
         InterceptorSesion sesion = new InterceptorSesion(claves, reloj, ServicioActasGrpc.PUBLICOS);
         return CasosConfig.conSesion(new ServicioActasGrpc(new ServicioActas(bd, reloj, claves)), sesion);
+    }
+
+    @Bean
+    public BindableService servicioColaboracionGrpc(Bd bd, Clock reloj, ClavesIdentidad claves) {
+        return CasosConfig.conSesion(new ServicioColaboracionGrpc(new ServicioColaboracion(bd, reloj)),
+                new InterceptorSesion(claves, reloj));
     }
 
     @Bean
