@@ -25,9 +25,11 @@ import com.actaflow.backend.expedientes.aplicacion.ColaTrabajos;
 import com.actaflow.backend.expedientes.aplicacion.MotorIA;
 import com.actaflow.backend.expedientes.aplicacion.ServicioActas;
 import com.actaflow.backend.expedientes.aplicacion.ServicioCasos;
+import com.actaflow.backend.expedientes.aplicacion.ServicioColaboracion;
 import com.actaflow.backend.expedientes.aplicacion.ServicioParticipantes;
 import com.actaflow.backend.expedientes.grpc.ServicioActasGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioCasosGrpc;
+import com.actaflow.backend.expedientes.grpc.ServicioColaboracionGrpc;
 import com.actaflow.backend.expedientes.grpc.ServicioParticipantesGrpc;
 import com.actaflow.backend.expedientes.sello.Sellador;
 import com.actaflow.backend.expedientes.seguridad.ClavesIdentidad;
@@ -49,6 +51,13 @@ import com.actaflow.contracts.cases.v1.Participant;
 import com.actaflow.contracts.cases.v1.ParticipantServiceGrpc;
 import com.actaflow.contracts.cases.v1.PartyCapacity;
 import com.actaflow.contracts.cases.v1.PartySide;
+import com.actaflow.contracts.collaboration.v1.CollaborationServiceGrpc;
+import com.actaflow.contracts.collaboration.v1.CompactDocumentRequest;
+import com.actaflow.contracts.collaboration.v1.EncryptedUpdate;
+import com.actaflow.contracts.collaboration.v1.GetDocumentStateRequest;
+import com.actaflow.contracts.collaboration.v1.GetDocumentStateResponse;
+import com.actaflow.contracts.collaboration.v1.PushUpdatesRequest;
+import com.actaflow.contracts.collaboration.v1.SequencedUpdate;
 import com.actaflow.contracts.common.v1.PageRequest;
 import com.actaflow.contracts.crypto.v1.CipherSuite;
 import com.actaflow.contracts.crypto.v1.EncryptedBlob;
@@ -151,6 +160,7 @@ class FlujoActasTest {
         List<BindableService> servicios = List.of(
                 conSesion(new ServicioCasosGrpc(new ServicioCasos(bd, reloj)), sesion),
                 conSesion(new ServicioParticipantesGrpc(new ServicioParticipantes(bd, reloj)), sesion),
+                conSesion(new ServicioColaboracionGrpc(new ServicioColaboracion(bd, reloj)), sesion),
                 conSesion(new ServicioActasGrpc(new ServicioActas(bd, reloj, identidad)),
                         new InterceptorSesion(identidad, reloj, ServicioActasGrpc.PUBLICOS)));
         FirmaHmac firma = new FirmaHmac(SECRETO_BFF, 300, reloj);
@@ -442,5 +452,64 @@ class FlujoActasTest {
             return true;
         }
         return false;
+    }
+
+    // ------------------------------------------------------------------------ borrador colaborativo
+
+    private CollaborationServiceGrpc.CollaborationServiceBlockingStub colaboracion(Persona p) {
+        return CollaborationServiceGrpc.newBlockingStub(como(p));
+    }
+
+    private static EncryptedUpdate cambio(String id) {
+        return EncryptedUpdate.newBuilder().setUpdateId(id).setUpdate(cifrado("cambio-" + id)).build();
+    }
+
+    private List<Long> enviar(Persona p, Minute acta, EncryptedUpdate... cambios) {
+        return colaboracion(p).pushUpdates(PushUpdatesRequest.newBuilder().setMinuteId(acta.getId())
+                .addAllUpdates(List.of(cambios)).build()).getSequencesList();
+    }
+
+    private GetDocumentStateResponse leer(Persona p, Minute acta, long despues) {
+        return colaboracion(p).getDocumentState(GetDocumentStateRequest.newBuilder().setMinuteId(acta.getId())
+                .setAfterSequence(despues).build());
+    }
+
+    @Test
+    void elBorradorSeOrdenaEnElServidorSinDuplicarYSoloLoEditanConciliadorYAsistentes() {
+        Escenario e = escenario();
+        Minute acta = actas(alicia).createMinute(nueva(e).build()).getMinute();
+        String uno = UUID.randomUUID().toString();
+        assertEquals(List.of(1L, 2L), enviar(alicia, acta, cambio(uno), cambio(UUID.randomUUID().toString())));
+        assertEquals(List.of(3L), enviar(bruno, acta, cambio(UUID.randomUUID().toString())), "el asistente edita");
+        assertEquals(Status.Code.PERMISSION_DENIED,
+                codigo(() -> enviar(carla, acta, cambio(UUID.randomUUID().toString()))), "la parte solo mira");
+        assertEquals(Status.Code.NOT_FOUND, codigo(() -> leer(dario, acta, 0)));
+
+        // La bandeja de salida sin conexion reenvia: mismo update_id, mismo numero, nada nuevo.
+        assertEquals(List.of(1L), enviar(alicia, acta, cambio(uno)));
+        GetDocumentStateResponse todo = leer(carla, acta, 0);
+        assertEquals(List.of(1L, 2L, 3L), todo.getUpdatesList().stream().map(SequencedUpdate::getSequence).toList());
+        assertFalse(todo.hasSnapshot());
+        assertEquals(List.of(3L), leer(carla, acta, 2).getUpdatesList().stream()
+                .map(SequencedUpdate::getSequence).toList());
+
+        // Compactar: la instantanea reemplaza los cambios que cubre.
+        assertEquals(Status.Code.FAILED_PRECONDITION, codigo(() -> colaboracion(alicia).compactDocument(
+                CompactDocumentRequest.newBuilder().setMinuteId(acta.getId()).setSnapshot(cifrado("foto"))
+                        .setCoversSequence(9).build())));
+        assertEquals(2, colaboracion(bruno).compactDocument(CompactDocumentRequest.newBuilder()
+                .setMinuteId(acta.getId()).setSnapshot(cifrado("foto")).setCoversSequence(2).build())
+                .getRemovedUpdates());
+        GetDocumentStateResponse despues = leer(carla, acta, 0);
+        assertTrue(despues.hasSnapshot());
+        assertEquals(2, despues.getSnapshotSequence());
+        assertEquals(List.of(3L), despues.getUpdatesList().stream().map(SequencedUpdate::getSequence).toList());
+        assertFalse(leer(carla, acta, 3).hasSnapshot(), "quien ya va al dia no recibe la instantanea");
+
+        // Cerrada el acta, el borrador ya no cambia (pero un reenvio de algo ya guardado se reconoce).
+        actas(alicia).closeMinute(cierre(acta));
+        assertEquals(Status.Code.FAILED_PRECONDITION,
+                codigo(() -> enviar(alicia, acta, cambio(UUID.randomUUID().toString()))));
+        assertEquals(List.of(1L), enviar(alicia, acta, cambio(uno)));
     }
 }
